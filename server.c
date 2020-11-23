@@ -3,9 +3,9 @@
 #include <string.h>
 #include <unistd.h>
 
-int resolve(const char *host, unsigned short port, struct addrinfo** addr) {
+int resolve(const char *host, unsigned short port, int fam, struct addrinfo** addr) {
 	struct addrinfo hints = {
-		.ai_family = AF_UNSPEC,
+		.ai_family = fam,
 		.ai_socktype = SOCK_STREAM,
 		.ai_flags = AI_PASSIVE,
 	};
@@ -18,7 +18,7 @@ int resolve_sa(const char *host, unsigned short port, union sockaddr_union *res)
 	struct addrinfo *ainfo = 0;
 	int ret;
 	SOCKADDR_UNION_AF(res) = AF_UNSPEC;
-	if((ret = resolve(host, port, &ainfo))) return ret;
+	if((ret = resolve(host, port, AF_UNSPEC, &ainfo))) return ret;
 	memcpy(res, ainfo->ai_addr, ainfo->ai_addrlen);
 	freeaddrinfo(ainfo);
 	return 0;
@@ -38,7 +38,7 @@ int server_waitclient(struct server *server, struct client* client) {
 
 int server_setup(struct server *server, const char* listenip, unsigned short port) {
 	struct addrinfo *ainfo = 0;
-	if(resolve(listenip, port, &ainfo)) return -1;
+	if(resolve(listenip, port, AF_UNSPEC, &ainfo)) return -1;
 	struct addrinfo* p;
 	int listenfd = -1;
 	for(p = ainfo; p; p = p->ai_next) {

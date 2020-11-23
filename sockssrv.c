@@ -25,6 +25,7 @@
 #include <unistd.h>
 #define _POSIX_C_SOURCE 200809L
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>
@@ -54,6 +55,8 @@
 #define THREAD_STACK_SIZE 32*1024
 #endif
 
+static bool allow_ipv4 = true;
+static bool allow_ipv6 = true;
 static const char* auth_user;
 static const char* auth_pass;
 static sblist* auth_ips;
@@ -138,8 +141,19 @@ static int connect_socks_target(unsigned char *buf, size_t n, struct client *cli
 	}
 	unsigned short port;
 	port = (buf[minlen-2] << 8) | buf[minlen-1];
+	int fam = AF_UNSPEC;
+	if (!allow_ipv4) fam = AF_INET6;
+	if (!allow_ipv6) fam = AF_INET;
 	/* there's no suitable errorcode in rfc1928 for dns lookup failure */
-	if(resolve(namebuf, port, &remote)) return -EC_GENERAL_FAILURE;
+	if(resolve(namebuf, port, fam, &remote)) return -EC_GENERAL_FAILURE;
+	if (!allow_ipv6 && remote->ai_addr->sa_family == AF_INET6) {
+		freeaddrinfo(remote);
+		return -EC_ADDRESSTYPE_NOT_SUPPORTED;
+	}
+	if (!allow_ipv4 && remote->ai_addr->sa_family == AF_INET) {
+		freeaddrinfo(remote);
+		return -EC_ADDRESSTYPE_NOT_SUPPORTED;
+	}
 	int fd = socket(remote->ai_addr->sa_family, SOCK_STREAM, 0);
 	if(fd == -1) {
 		eval_errno:
@@ -387,10 +401,16 @@ int main(int argc, char** argv) {
 	int ch;
 	const char *listenip = "0.0.0.0";
 	unsigned port = 1080;
-	while((ch = getopt(argc, argv, ":1b:i:p:u:P:")) != -1) {
+	while((ch = getopt(argc, argv, ":146b:i:p:u:P:")) != -1) {
 		switch(ch) {
 			case '1':
 				auth_ips = sblist_new(sizeof(union sockaddr_union), 8);
+				break;
+			case '4':
+				allow_ipv6 = false;
+				break;
+			case '6':
+				allow_ipv4 = false;
 				break;
 			case 'b':
 				resolve_sa(optarg, 0, &bind_addr);
@@ -422,6 +442,10 @@ int main(int argc, char** argv) {
 	}
 	if(auth_ips && !auth_pass) {
 		dprintf(2, "error: auth-once option must be used together with user/pass\n");
+		return 1;
+	}
+	if(!allow_ipv6 && !allow_ipv4) {
+		dprintf(2, "error: -4 and -6 options cannot be used together\n");
 		return 1;
 	}
 	signal(SIGPIPE, SIG_IGN);
