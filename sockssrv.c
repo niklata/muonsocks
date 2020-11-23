@@ -36,6 +36,7 @@
 #include <limits.h>
 #include "server.h"
 #include "sblist.h"
+#include "privs.h"
 
 #ifndef MAX
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
@@ -57,6 +58,8 @@
 
 static bool allow_ipv4 = true;
 static bool allow_ipv6 = true;
+static const char* g_user_id;
+static const char* g_chroot;
 static const char* auth_user;
 static const char* auth_pass;
 static sblist* auth_ips;
@@ -401,7 +404,7 @@ int main(int argc, char** argv) {
 	int ch;
 	const char *listenip = "0.0.0.0";
 	unsigned port = 1080;
-	while((ch = getopt(argc, argv, ":146b:i:p:u:P:")) != -1) {
+	while((ch = getopt(argc, argv, ":146b:u:C:U:P:i:p:")) != -1) {
 		switch(ch) {
 			case '1':
 				auth_ips = sblist_new(sizeof(union sockaddr_union), 8);
@@ -416,6 +419,12 @@ int main(int argc, char** argv) {
 				resolve_sa(optarg, 0, &bind_addr);
 				break;
 			case 'u':
+				g_user_id = strdup(optarg);
+				break;
+			case 'C':
+				g_chroot = strdup(optarg);
+				break;
+			case 'U':
 				auth_user = strdup(optarg);
 				zero_arg(optarg);
 				break;
@@ -456,6 +465,28 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 	server = &s;
+
+	// XXX: Modified
+	/* This is tricky -- we *must* use a name that will not be in hosts,
+	 * otherwise, at least with eglibc, the resolve and NSS libraries will not
+	 * be properly loaded.  The '.invalid' label is RFC-guaranteed to never
+	 * be installed into the root zone, so we use that to avoid harassing
+	 * DNS servers at start.
+	 */
+	(void) gethostbyname("fail.invalid");
+
+	uid_t nsocks_uid;
+	gid_t nsocks_gid;
+	if (g_user_id) {
+		if (nk_uidgidbyname(g_user_id, &nsocks_uid, &nsocks_gid)) {
+			dprintf(2, "invalid user '%s' specified\n", g_user_id);
+			return 1;
+		}
+	}
+	if (g_chroot)
+		nk_set_chroot(g_chroot);
+	if (g_user_id)
+		nk_set_uidgid(nsocks_uid, nsocks_gid, NULL, 0);
 
 	while(1) {
 		collect(threads);
