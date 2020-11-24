@@ -35,6 +35,7 @@
 #include <memory>
 #include <vector>
 #include <algorithm>
+#include <atomic>
 #include "scopeguard.hpp"
 #include "server.h"
 extern "C" {
@@ -100,7 +101,7 @@ struct thread {
 	pthread_t pt;
 	struct client client;
 	enum socksstate state;
-	volatile int  done;
+	std::atomic<bool> done;
 };
 
 #ifndef CONFIG_LOG
@@ -379,7 +380,7 @@ breakloop:
 		close(remotefd);
 
 	close(t->client.fd);
-	t->done = 1;
+	t->done = true;
 
 	return 0;
 }
@@ -512,7 +513,7 @@ int main(int argc, char** argv) {
 		collect(threads);
 		struct client c;
 		auto curr = std::make_unique<thread>();
-		curr->done = 0;
+		curr->done = false;
 		if(server_waitclient(&s, &c)) {
 			continue;
 		}
