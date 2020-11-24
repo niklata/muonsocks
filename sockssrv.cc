@@ -60,6 +60,8 @@ extern "C" {
 #define THREAD_STACK_SIZE 32*1024
 #endif
 
+#define BUF_SIZE 4096
+
 static bool allow_ipv4 = true;
 static bool allow_ipv6 = true;
 static const char* g_user_id;
@@ -71,12 +73,6 @@ static std::vector<sockaddr_union *> auth_ips;
 static pthread_rwlock_t auth_ips_lock = PTHREAD_RWLOCK_INITIALIZER;
 static const struct server* server;
 static union sockaddr_union bind_addr;
-
-enum socksstate {
-	SS_1_CONNECTED,
-	SS_2_NEED_AUTH, /* skipped if NO_AUTH method supported */
-	SS_3_AUTHED,
-};
 
 enum authmethod {
 	AM_NO_AUTH = 0,
@@ -115,89 +111,6 @@ struct thread {
 static void dolog(const char* fmt, ...) { }
 #endif
 
-static int connect_socks_target(unsigned char *buf, size_t n, struct client *client) {
-	if(n < 5) return -EC_GENERAL_FAILURE;
-	if(buf[0] != 5) return -EC_GENERAL_FAILURE;
-	if(buf[1] != 1) return -EC_COMMAND_NOT_SUPPORTED; /* we support only CONNECT method */
-	if(buf[2] != 0) return -EC_GENERAL_FAILURE; /* malformed packet */
-
-	int af = AF_INET;
-	size_t minlen = 4 + 4 + 2, l;
-	char namebuf[256];
-	struct addrinfo* remote;
-
-	switch(buf[3]) {
-		case 4: /* ipv6 */
-			af = AF_INET6;
-			minlen = 4 + 2 + 16;
-			/* fall through */
-		case 1: /* ipv4 */
-			if(n < minlen) return -EC_GENERAL_FAILURE;
-			if(namebuf != inet_ntop(af, buf+4, namebuf, sizeof namebuf))
-				return -EC_GENERAL_FAILURE; /* malformed or too long addr */
-			break;
-		case 3: /* dns name */
-			l = buf[4];
-			minlen = 4 + 2 + l + 1;
-			if(n < 4 + 2 + l + 1) return -EC_GENERAL_FAILURE;
-			memcpy(namebuf, buf+4+1, l);
-			namebuf[l] = 0;
-			break;
-		default:
-			return -EC_ADDRESSTYPE_NOT_SUPPORTED;
-	}
-	unsigned short port;
-	port = (buf[minlen-2] << 8) | buf[minlen-1];
-	int fam = AF_UNSPEC;
-	if (!allow_ipv4) fam = AF_INET6;
-	if (!allow_ipv6) fam = AF_INET;
-	/* there's no suitable errorcode in rfc1928 for dns lookup failure */
-	if(resolve(namebuf, port, fam, &remote)) return -EC_GENERAL_FAILURE;
-	SCOPE_EXIT { freeaddrinfo(remote); };
-	if (!allow_ipv6 && remote->ai_addr->sa_family == AF_INET6) {
-		return -EC_ADDRESSTYPE_NOT_SUPPORTED;
-	}
-	if (!allow_ipv4 && remote->ai_addr->sa_family == AF_INET) {
-		return -EC_ADDRESSTYPE_NOT_SUPPORTED;
-	}
-	int fd = socket(remote->ai_addr->sa_family, SOCK_STREAM, 0);
-	if(fd == -1) goto eval_errno;
-	if(SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1)
-		goto eval_errno;
-	if(connect(fd, remote->ai_addr, remote->ai_addrlen) == -1)
-		goto eval_errno;
-
-	if(CONFIG_LOG) {
-		char clientname[256];
-		af = SOCKADDR_UNION_AF(&client->addr);
-		void *ipdata = SOCKADDR_UNION_ADDRESS(&client->addr);
-		inet_ntop(af, ipdata, clientname, sizeof clientname);
-		dolog("client[%d] %s: connected to %s:%d\n", client->fd, clientname, namebuf, port);
-	}
-	return fd;
-eval_errno:
-	if (fd >= 0) close(fd);
-	switch(errno) {
-		case ETIMEDOUT:
-			return -EC_TTL_EXPIRED;
-		case EPROTOTYPE:
-		case EPROTONOSUPPORT:
-		case EAFNOSUPPORT:
-			return -EC_ADDRESSTYPE_NOT_SUPPORTED;
-		case ECONNREFUSED:
-			return -EC_CONN_REFUSED;
-		case ENETDOWN:
-		case ENETUNREACH:
-			return -EC_NET_UNREACHABLE;
-		case EHOSTUNREACH:
-			return -EC_HOST_UNREACHABLE;
-		case EBADF:
-		default:
-		perror("socket/connect");
-		return -EC_GENERAL_FAILURE;
-	}
-}
-
 static int is_authed(union sockaddr_union *client, union sockaddr_union *authedip) {
 	int af = SOCKADDR_UNION_AF(authedip);
 	if(af == SOCKADDR_UNION_AF(client)) {
@@ -221,32 +134,6 @@ static void add_auth_ip(union sockaddr_union *caddr) {
 	auth_ips.push_back(caddr);
 }
 
-static enum authmethod check_auth_method(unsigned char *buf, size_t n, struct client*client) {
-	if(buf[0] != 5) return AM_INVALID;
-	size_t idx = 1;
-	if(idx >= n ) return AM_INVALID;
-	int n_methods = buf[idx];
-	idx++;
-	while(idx < n && n_methods > 0) {
-		if(buf[idx] == AM_NO_AUTH) {
-			if(!auth_user) return AM_NO_AUTH;
-			else if(use_auth_ips) {
-				int authed = 0;
-				if(pthread_rwlock_rdlock(&auth_ips_lock) == 0) {
-					authed = is_in_authed_list(&client->addr);
-					pthread_rwlock_unlock(&auth_ips_lock);
-				}
-				if(authed) return AM_NO_AUTH;
-			}
-		} else if(buf[idx] == AM_USERNAME) {
-			if(auth_user) return AM_USERNAME;
-		}
-		idx++;
-		n_methods--;
-	}
-	return AM_INVALID;
-}
-
 static int send_auth_response(int fd, int version, enum authmethod meth) {
 	char buf[2];
 	buf[0] = version;
@@ -263,7 +150,7 @@ static int send_error(int fd, enum errorcode ec) {
 	return r == sizeof buf ? r : -1;
 }
 
-static void copyloop(int fd1, int fd2) {
+static void copyloop(int fd1, int fd2, char *buf) {
 	struct pollfd fds[2] = {
 		[0] = {.fd = fd1, .events = POLLIN},
 		[1] = {.fd = fd2, .events = POLLIN},
@@ -285,13 +172,12 @@ static void copyloop(int fd1, int fd2) {
 		}
 		int infd = (fds[0].revents & POLLIN) ? fd1 : fd2;
 		int outfd = infd == fd2 ? fd1 : fd2;
-		char buf[4096];
 		ssize_t sent, n;
 		int cycles = 32;
 read_retry:
 		sent = 0;
 		if (--cycles <= 0) continue; // Don't let one channel monopolize.
-		n = recv(infd, buf, sizeof buf, MSG_DONTWAIT);
+		n = recv(infd, buf, BUF_SIZE, MSG_DONTWAIT);
 		if (n == 0) return;
 		if (n < 0) {
 			switch (errno) {
@@ -314,74 +200,207 @@ read_retry:
 	}
 }
 
-static enum errorcode check_credentials(unsigned char* buf, size_t n) {
-	if(n < 5) return EC_GENERAL_FAILURE;
-	if(buf[0] != 1) return EC_GENERAL_FAILURE;
-	unsigned ulen, plen;
-	ulen=buf[1];
-	if(n < 2 + ulen + 2) return EC_GENERAL_FAILURE;
-	plen=buf[2+ulen];
-	if(n < 2 + ulen + 1 + plen) return EC_GENERAL_FAILURE;
-	char user[256], pass[256];
-	memcpy(user, buf+2, ulen);
-	memcpy(pass, buf+2+ulen+1, plen);
-	user[ulen] = 0;
-	pass[plen] = 0;
-	if(!strcmp(user, auth_user) && !strcmp(pass, auth_pass)) return EC_SUCCESS;
-	return EC_NOT_ALLOWED;
+static bool extend_cbuf(const thread *t, char *buf, size_t &buflen)
+{
+    for (;;) {
+        auto n = read(t->client.fd, buf + buflen, BUF_SIZE - buflen);
+        if (n == 0) {
+            return false;
+        } else if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        buflen += n;
+        return true;
+    }
+}
+
+#define EXTEND_BUF() do { if (!extend_cbuf(t, buf, buflen)) return nullptr; } while (0)
+#define RESET_BUF() do { buflen = 0; } while (0)
+
+static enum errorcode errno_to_sockscode()
+{
+    switch(errno) {
+    case ETIMEDOUT:
+        return EC_TTL_EXPIRED;
+    case EPROTOTYPE:
+    case EPROTONOSUPPORT:
+    case EAFNOSUPPORT:
+        return EC_ADDRESSTYPE_NOT_SUPPORTED;
+    case ECONNREFUSED:
+        return EC_CONN_REFUSED;
+    case ENETDOWN:
+    case ENETUNREACH:
+        return EC_NET_UNREACHABLE;
+    case EHOSTUNREACH:
+        return EC_HOST_UNREACHABLE;
+    case EBADF:
+    default:
+        return EC_GENERAL_FAILURE;
+    }
 }
 
 static void* clientthread(void *data) {
-	auto t = static_cast<thread *>(data);
-	enum socksstate state = SS_1_CONNECTED;
-	unsigned char buf[1024];
-	ssize_t n;
-	int remotefd = -1;
-	enum authmethod am;
-	while((n = recv(t->client.fd, buf, sizeof buf, 0)) > 0) {
-		switch(state) {
-			case SS_1_CONNECTED:
-				am = check_auth_method(buf, n, &t->client);
-				if(am == AM_NO_AUTH) state = SS_3_AUTHED;
-				else if (am == AM_USERNAME) state = SS_2_NEED_AUTH;
-				if (send_auth_response(t->client.fd, 5, am) < 0) goto breakloop;
-				if(am == AM_INVALID) goto breakloop;
-				break;
-			case SS_2_NEED_AUTH: {
-				auto ret = check_credentials(buf, n);
-				if (send_auth_response(t->client.fd, 1, am) < 0) goto breakloop;
-				if(ret != EC_SUCCESS)
-					goto breakloop;
-				state = SS_3_AUTHED;
-				if(use_auth_ips && !pthread_rwlock_wrlock(&auth_ips_lock)) {
-					if(!is_in_authed_list(&t->client.addr))
-						add_auth_ip(&t->client.addr);
-					pthread_rwlock_unlock(&auth_ips_lock);
-				}
-				break;
-			}
-			case SS_3_AUTHED: {
-				auto ret = connect_socks_target(buf, n, &t->client);
-				if(ret < 0) {
-					send_error(t->client.fd, static_cast<enum errorcode>(ret * -1));
-					goto breakloop;
-				}
-				remotefd = ret;
-				if (send_error(t->client.fd, EC_SUCCESS) < 0) goto breakloop;
-				copyloop(t->client.fd, remotefd);
-				goto breakloop;
-			}
-		}
-	}
-breakloop:
+    auto t = static_cast<thread *>(data);
+    char buf[BUF_SIZE];
+    enum authmethod am = AM_INVALID;
+    int socks_version;
+    size_t buflen = 0;
 
-	if(remotefd != -1)
-		close(remotefd);
+    SCOPE_EXIT {
+        close(t->client.fd);
+        t->done = true;
+    };
+    EXTEND_BUF();
 
-	close(t->client.fd);
-	t->done = true;
+    socks_version = buf[0];
+    if (socks_version == 5) {
+        while (buflen < 2) { EXTEND_BUF(); }
+        int n_methods = buf[1];
+        while (buflen < 2 + n_methods) { EXTEND_BUF(); }
+        for (int i = 0; i < n_methods; ++i) {
+            if (buf[2 + i] == AM_NO_AUTH) {
+                if (!auth_user) {
+                    am = AM_NO_AUTH;
+                    break;
+                } else if (use_auth_ips) {
+                    bool authed = 0;
+                    if (pthread_rwlock_rdlock(&auth_ips_lock) == 0) {
+                        authed = is_in_authed_list(&t->client.addr);
+                        pthread_rwlock_unlock(&auth_ips_lock);
+                    }
+                    if (authed) {
+                        am = AM_NO_AUTH;
+                        break;
+                    }
+                }
+            } else if (buf[2 + i] == AM_USERNAME) {
+                if (auth_user) {
+                    am = AM_USERNAME;
+                    break;
+                }
+            }
+        }
+        if (am == AM_INVALID) return nullptr;
 
-	return 0;
+        RESET_BUF();
+        if (send_auth_response(t->client.fd, 5, am) < 0) return nullptr;
+        if (am == AM_USERNAME) {
+            while (buflen < 5) { EXTEND_BUF(); }
+            if (buf[0] != 1) return nullptr;
+            unsigned ulen, plen;
+            ulen = buf[1];
+            while (buflen < 2 + ulen + 2) { EXTEND_BUF(); }
+            plen = buf[2 + ulen];
+            while (buflen < 2 + ulen + 1 + plen) { EXTEND_BUF(); }
+            char user[256], pass[256];
+            memcpy(user, buf + 2, ulen);
+            memcpy(pass, buf + 2 + ulen + 1, plen);
+            user[ulen] = 0;
+            pass[plen] = 0;
+            bool allow = !strcmp(user, auth_user) && !strcmp(pass, auth_pass);
+            if (!allow) return nullptr;
+            if (use_auth_ips && !pthread_rwlock_wrlock(&auth_ips_lock)) {
+                if (!is_in_authed_list(&t->client.addr))
+                    add_auth_ip(&t->client.addr);
+                pthread_rwlock_unlock(&auth_ips_lock);
+            }
+            if (send_auth_response(t->client.fd, 1, am) < 0) return nullptr;
+            RESET_BUF();
+        }
+
+        // Now we're done with the authentication negotiations.
+        while (buflen < 5) { EXTEND_BUF(); }
+        if (buf[0] != 5) {
+            send_error(t->client.fd, EC_GENERAL_FAILURE);
+            return nullptr;
+        }
+        if (buf[1] != 1) {
+            send_error(t->client.fd, EC_COMMAND_NOT_SUPPORTED);
+            return nullptr;
+        }
+        if (buf[2] != 0) {
+            send_error(t->client.fd, EC_GENERAL_FAILURE);
+            return nullptr;
+        }
+
+        int af;
+        size_t minlen;
+        char namebuf[256];
+        if (buf[3] == 3) {
+            size_t l = buf[4];
+            minlen = 4 + 1 + l + 2;
+            while (buflen < minlen) { EXTEND_BUF(); }
+            memcpy(namebuf, buf + 4 + 1, l);
+            namebuf[l] = 0;
+        } else {
+            if (buf[3] == 1) {
+                af = AF_INET;
+                minlen = 4 + 4 + 2;
+            } else if (buf[3] == 4) {
+                af = AF_INET6;
+                minlen = 4 + 16 + 2;
+            } else {
+                send_error(t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
+                return nullptr;
+            }
+            while (buflen < minlen) { EXTEND_BUF(); }
+            if (namebuf != inet_ntop(af, buf + 4, namebuf, sizeof namebuf)) {
+                send_error(t->client.fd, EC_GENERAL_FAILURE);
+                return nullptr;
+            }
+        }
+        unsigned short port;
+        memcpy(&port, buf + minlen - 2, 2);
+        port = ntohs(port);
+        int fam = AF_UNSPEC;
+        if (!allow_ipv4) fam = AF_INET6;
+        if (!allow_ipv6) fam = AF_INET;
+        /* there's no suitable errorcode in rfc1928 for dns lookup failure */
+        struct addrinfo* remote;
+        if (resolve(namebuf, port, fam, &remote)) {
+            send_error(t->client.fd, EC_GENERAL_FAILURE);
+            return nullptr;
+        }
+        SCOPE_EXIT { freeaddrinfo(remote); };
+        if (!allow_ipv6 && remote->ai_addr->sa_family == AF_INET6) {
+            send_error(t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
+            return nullptr;
+        }
+        if (!allow_ipv4 && remote->ai_addr->sa_family == AF_INET) {
+            send_error(t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
+            return nullptr;
+        }
+        int fd = socket(remote->ai_addr->sa_family, SOCK_STREAM, 0);
+        if (fd == -1) {
+            send_error(t->client.fd, errno_to_sockscode());
+            return nullptr;
+        }
+        SCOPE_EXIT { close(fd); };
+        if (SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1) {
+            send_error(t->client.fd, errno_to_sockscode());
+            return nullptr;
+        }
+        if (connect(fd, remote->ai_addr, remote->ai_addrlen) == -1) {
+            send_error(t->client.fd, errno_to_sockscode());
+            return nullptr;
+        }
+
+        if (CONFIG_LOG) {
+            char clientname[256];
+            af = SOCKADDR_UNION_AF(&t->client.addr);
+            void *ipdata = SOCKADDR_UNION_ADDRESS(&t->client.addr);
+            inet_ntop(af, ipdata, clientname, sizeof clientname);
+            dolog("client[%d] %s: connected to %s:%d\n", t->client.fd, clientname, namebuf, port);
+        }
+        if (send_error(t->client.fd, EC_SUCCESS) < 0) return nullptr;
+        RESET_BUF();
+        copyloop(t->client.fd, fd, buf);
+    } else if (socks_version == 4) {
+        // XXX: implement
+        send_error(t->client.fd, EC_GENERAL_FAILURE);
+    }
+    return nullptr;
 }
 
 static void collect(std::vector<std::unique_ptr<thread>> &threads) {
