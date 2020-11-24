@@ -150,6 +150,12 @@ static int send_error(int fd, enum errorcode ec) {
 	return r == sizeof buf ? r : -1;
 }
 
+static int send_error4(int fd, enum errorcode ec) {
+    char buf[8] = { 0, ec == 0 ? char(0x5a) : char(0x5b), 0,0, 0,0,0,0 };
+    ssize_t r = write(fd, buf, sizeof buf);
+    return r == sizeof buf ? r : -1;
+}
+
 static void copyloop(int fd1, int fd2, char *buf) {
 	struct pollfd fds[2] = {
 		[0] = {.fd = fd1, .events = POLLIN},
@@ -243,9 +249,11 @@ static enum errorcode errno_to_sockscode()
 static void* clientthread(void *data) {
     auto t = static_cast<thread *>(data);
     char buf[BUF_SIZE];
+    char namebuf[256];
+    size_t buflen = 0;
     enum authmethod am = AM_INVALID;
     int socks_version;
-    size_t buflen = 0;
+    unsigned short port;
 
     SCOPE_EXIT {
         close(t->client.fd);
@@ -326,7 +334,6 @@ static void* clientthread(void *data) {
 
         int af;
         size_t minlen;
-        char namebuf[256];
         if (buf[3] == 3) {
             size_t l = buf[4];
             minlen = 4 + 1 + l + 2;
@@ -350,7 +357,6 @@ static void* clientthread(void *data) {
                 return nullptr;
             }
         }
-        unsigned short port;
         memcpy(&port, buf + minlen - 2, 2);
         port = ntohs(port);
         int fam = AF_UNSPEC;
@@ -397,8 +403,103 @@ static void* clientthread(void *data) {
         RESET_BUF();
         copyloop(t->client.fd, fd, buf);
     } else if (socks_version == 4) {
-        // XXX: implement
-        send_error(t->client.fd, EC_GENERAL_FAILURE);
+        if (auth_pass) {
+            send_error4(t->client.fd, EC_GENERAL_FAILURE);
+            return nullptr;
+        }
+        if (!allow_ipv4) {
+            send_error4(t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
+            return nullptr;
+        }
+
+        while (buflen < 9) { EXTEND_BUF(); }
+        if (buf[0] != 4) {
+            send_error4(t->client.fd, EC_GENERAL_FAILURE);
+            return nullptr;
+        }
+        if (buf[1] != 1) {
+            send_error4(t->client.fd, EC_COMMAND_NOT_SUPPORTED);
+            return nullptr;
+        }
+        memcpy(&port, buf + 2, 2);
+        port = ntohs(port);
+
+        int af = AF_INET;
+        bool is_dns = false;
+        if (buf[4] == 0 && buf[5] == 0 && buf[6] == 0 && buf[7] != 0) {
+            is_dns = true;
+        } else {
+            if (namebuf != inet_ntop(af, buf + 4, namebuf, sizeof namebuf)) {
+                send_error4(t->client.fd, EC_GENERAL_FAILURE);
+                return nullptr;
+            }
+        }
+        size_t i = 8;
+        for (;;++i) {
+            // Here we just skip the userid for now
+            if (i > BUF_SIZE / 2) {
+                send_error4(t->client.fd, EC_GENERAL_FAILURE);
+                return nullptr;
+            }
+            while (buflen < i + 1) { EXTEND_BUF(); }
+            if (buf[i] == 0) { ++i; break; }
+        }
+        if (is_dns) {
+            size_t buf_start = i;
+            for (;;++i) {
+                if (i - buf_start > sizeof namebuf - 1) {
+                    send_error4(t->client.fd, EC_GENERAL_FAILURE);
+                    return nullptr;
+                }
+                while (buflen < i + 1) { EXTEND_BUF(); }
+                if (buf[i] == 0) {
+                    memcpy(namebuf, buf + buf_start, i - buf_start);
+                    namebuf[i - buf_start] = 0;
+                    break;
+                }
+            }
+        }
+        int fam = AF_INET;
+        /* there's no suitable errorcode in rfc1928 for dns lookup failure */
+        struct addrinfo* remote;
+        if (resolve(namebuf, port, fam, &remote)) {
+            send_error4(t->client.fd, EC_GENERAL_FAILURE);
+            return nullptr;
+        }
+        SCOPE_EXIT { freeaddrinfo(remote); };
+        if (!allow_ipv6 && remote->ai_addr->sa_family == AF_INET6) {
+            send_error4(t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
+            return nullptr;
+        }
+        if (!allow_ipv4 && remote->ai_addr->sa_family == AF_INET) {
+            send_error4(t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
+            return nullptr;
+        }
+        int fd = socket(remote->ai_addr->sa_family, SOCK_STREAM, 0);
+        if (fd == -1) {
+            send_error4(t->client.fd, errno_to_sockscode());
+            return nullptr;
+        }
+        SCOPE_EXIT { close(fd); };
+        if (SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1) {
+            send_error4(t->client.fd, errno_to_sockscode());
+            return nullptr;
+        }
+        if (connect(fd, remote->ai_addr, remote->ai_addrlen) == -1) {
+            send_error4(t->client.fd, errno_to_sockscode());
+            return nullptr;
+        }
+
+        if (CONFIG_LOG) {
+            char clientname[256];
+            af = SOCKADDR_UNION_AF(&t->client.addr);
+            void *ipdata = SOCKADDR_UNION_ADDRESS(&t->client.addr);
+            inet_ntop(af, ipdata, clientname, sizeof clientname);
+            dolog("client[%d] %s: connected to %s:%d\n", t->client.fd, clientname, namebuf, port);
+        }
+        if (send_error4(t->client.fd, EC_SUCCESS) < 0) return nullptr;
+        RESET_BUF();
+        copyloop(t->client.fd, fd, buf);
     }
     return nullptr;
 }
