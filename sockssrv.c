@@ -283,7 +283,7 @@ static void copyloop(int fd1, int fd2) {
 		}
 		int infd = (fds[0].revents & POLLIN) ? fd1 : fd2;
 		int outfd = infd == fd2 ? fd1 : fd2;
-		char buf[1024];
+		char buf[4096];
 		ssize_t sent = 0, n = read(infd, buf, sizeof buf);
 		if(n <= 0) return;
 		while(sent < n) {
