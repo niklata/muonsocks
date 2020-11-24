@@ -513,7 +513,10 @@ int main(int argc, char** argv) {
 		struct thread *curr = malloc(sizeof (struct thread));
 		if(!curr) goto oom;
 		curr->done = 0;
-		if(server_waitclient(&s, &c)) continue;
+		if(server_waitclient(&s, &c)) {
+			free(curr);
+			continue;
+		}
 		curr->client = c;
 		if(!sblist_add(threads, &curr)) {
 			close(curr->client.fd);
