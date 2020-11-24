@@ -284,15 +284,19 @@ static void copyloop(int fd1, int fd2) {
 		int infd = (fds[0].revents & POLLIN) ? fd1 : fd2;
 		int outfd = infd == fd2 ? fd1 : fd2;
 		char buf[4096];
-		ssize_t sent = 0, n;
+		ssize_t sent, n;
+		int cycles = 32;
 read_retry:
-		n = read(infd, buf, sizeof buf);
+		sent = 0;
+		if (--cycles <= 0) continue; // Don't let one channel monopolize.
+		n = recv(infd, buf, sizeof buf, MSG_DONTWAIT);
 		if (n == 0) return;
 		if (n < 0) {
 			switch (errno) {
 			case EINTR:
-			case EAGAIN:
 				goto read_retry;
+			case EAGAIN:
+				continue;
 			default: return;
 			}
 		}
@@ -304,6 +308,7 @@ read_retry:
 			}
 			sent += m;
 		}
+		goto read_retry;
 	}
 }
 
