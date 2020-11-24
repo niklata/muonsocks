@@ -32,9 +32,11 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <limits.h>
+extern "C" {
 #include "server.h"
 #include "sblist.h"
 #include "privs.h"
+}
 
 #ifndef MAX
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
@@ -63,7 +65,7 @@ static const char* auth_pass;
 static sblist* auth_ips;
 static pthread_rwlock_t auth_ips_lock = PTHREAD_RWLOCK_INITIALIZER;
 static const struct server* server;
-static union sockaddr_union bind_addr = {.v4.sin_family = AF_UNSPEC};
+static union sockaddr_union bind_addr;
 
 enum socksstate {
 	SS_1_CONNECTED,
@@ -210,7 +212,7 @@ static int is_authed(union sockaddr_union *client, union sockaddr_union *authedi
 static int is_in_authed_list(union sockaddr_union *caddr) {
 	size_t i;
 	for(i=0;i<sblist_getsize(auth_ips);i++)
-		if(is_authed(caddr, sblist_get(auth_ips, i)))
+		if(is_authed(caddr, static_cast<sockaddr_union *>(sblist_get(auth_ips, i))))
 			return 1;
 	return 0;
 }
@@ -330,11 +332,10 @@ static enum errorcode check_credentials(unsigned char* buf, size_t n) {
 }
 
 static void* clientthread(void *data) {
-	struct thread *t = data;
+	auto t = static_cast<thread *>(data);
 	t->state = SS_1_CONNECTED;
 	unsigned char buf[1024];
 	ssize_t n;
-	int ret;
 	int remotefd = -1;
 	enum authmethod am;
 	while((n = recv(t->client.fd, buf, sizeof buf, 0)) > 0) {
@@ -346,9 +347,9 @@ static void* clientthread(void *data) {
 				if (send_auth_response(t->client.fd, 5, am) < 0) goto breakloop;
 				if(am == AM_INVALID) goto breakloop;
 				break;
-			case SS_2_NEED_AUTH:
-				ret = check_credentials(buf, n);
-				if (send_auth_response(t->client.fd, 1, ret) < 0) goto breakloop;
+			case SS_2_NEED_AUTH: {
+				auto ret = check_credentials(buf, n);
+				if (send_auth_response(t->client.fd, 1, am) < 0) goto breakloop;
 				if(ret != EC_SUCCESS)
 					goto breakloop;
 				t->state = SS_3_AUTHED;
@@ -358,17 +359,18 @@ static void* clientthread(void *data) {
 					pthread_rwlock_unlock(&auth_ips_lock);
 				}
 				break;
-			case SS_3_AUTHED:
-				ret = connect_socks_target(buf, n, &t->client);
+			}
+			case SS_3_AUTHED: {
+				auto ret = connect_socks_target(buf, n, &t->client);
 				if(ret < 0) {
-					send_error(t->client.fd, ret*-1);
+					send_error(t->client.fd, static_cast<enum errorcode>(ret * -1));
 					goto breakloop;
 				}
 				remotefd = ret;
 				if (send_error(t->client.fd, EC_SUCCESS) < 0) goto breakloop;
 				copyloop(t->client.fd, remotefd);
 				goto breakloop;
-
+			}
 		}
 	}
 breakloop:
@@ -420,6 +422,7 @@ static void zero_arg(char *s) {
 }
 
 int main(int argc, char** argv) {
+	bind_addr.v4.sin_family = AF_UNSPEC;
 	int ch;
 	const char *listenip = "0.0.0.0";
 	unsigned port = 1080;
@@ -510,7 +513,7 @@ int main(int argc, char** argv) {
 	while(1) {
 		collect(threads);
 		struct client c;
-		struct thread *curr = malloc(sizeof (struct thread));
+		auto curr = static_cast<thread *>(malloc(sizeof (struct thread)));
 		if(!curr) goto oom;
 		curr->done = 0;
 		if(server_waitclient(&s, &c)) {

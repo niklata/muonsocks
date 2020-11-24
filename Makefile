@@ -5,12 +5,14 @@ prefix = /usr/local
 bindir = $(prefix)/bin
 
 PROG = microsocks
-SRCS =  sockssrv.c server.c sblist.c sblist_delete.c log.c privs.c
-OBJS = $(SRCS:.c=.o)
+SRCS =  sockssrv.cc server.c sblist.c sblist_delete.c log.c privs.c
+OBJS = sockssrv.o server.o sblist.o sblist_delete.o log.o privs.o
+#OBJS = $(SRCS:.c=.o)
 
 LIBS = -lpthread
 
 CFLAGS += -Wall -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
+CPPFLAGS += -fno-rtti
 
 -include config.mak
 
@@ -25,10 +27,10 @@ clean:
 	rm -f $(OBJS)
 
 %.o: %.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(INC) $(PIC) -c -o $@ $<
+	$(CC) $(CFLAGS) $(INC) $(PIC) -c -o $@ $<
 
 $(PROG): $(OBJS)
-	$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
+	$(CXX) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
 
 .PHONY: all clean install
 
