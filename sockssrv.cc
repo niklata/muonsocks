@@ -35,6 +35,7 @@
 #include <memory>
 #include <vector>
 #include <algorithm>
+#include "scopeguard.hpp"
 extern "C" {
 #include "server.h"
 #include "privs.h"
@@ -152,45 +153,20 @@ static int connect_socks_target(unsigned char *buf, size_t n, struct client *cli
 	if (!allow_ipv6) fam = AF_INET;
 	/* there's no suitable errorcode in rfc1928 for dns lookup failure */
 	if(resolve(namebuf, port, fam, &remote)) return -EC_GENERAL_FAILURE;
+	SCOPE_EXIT { freeaddrinfo(remote); };
 	if (!allow_ipv6 && remote->ai_addr->sa_family == AF_INET6) {
-		freeaddrinfo(remote);
 		return -EC_ADDRESSTYPE_NOT_SUPPORTED;
 	}
 	if (!allow_ipv4 && remote->ai_addr->sa_family == AF_INET) {
-		freeaddrinfo(remote);
 		return -EC_ADDRESSTYPE_NOT_SUPPORTED;
 	}
 	int fd = socket(remote->ai_addr->sa_family, SOCK_STREAM, 0);
-	if(fd == -1) {
-		eval_errno:
-		if(fd != -1) close(fd);
-		freeaddrinfo(remote);
-		switch(errno) {
-			case ETIMEDOUT:
-				return -EC_TTL_EXPIRED;
-			case EPROTOTYPE:
-			case EPROTONOSUPPORT:
-			case EAFNOSUPPORT:
-				return -EC_ADDRESSTYPE_NOT_SUPPORTED;
-			case ECONNREFUSED:
-				return -EC_CONN_REFUSED;
-			case ENETDOWN:
-			case ENETUNREACH:
-				return -EC_NET_UNREACHABLE;
-			case EHOSTUNREACH:
-				return -EC_HOST_UNREACHABLE;
-			case EBADF:
-			default:
-			perror("socket/connect");
-			return -EC_GENERAL_FAILURE;
-		}
-	}
+	if(fd == -1) goto eval_errno;
 	if(SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1)
 		goto eval_errno;
 	if(connect(fd, remote->ai_addr, remote->ai_addrlen) == -1)
 		goto eval_errno;
 
-	freeaddrinfo(remote);
 	if(CONFIG_LOG) {
 		char clientname[256];
 		af = SOCKADDR_UNION_AF(&client->addr);
@@ -199,6 +175,27 @@ static int connect_socks_target(unsigned char *buf, size_t n, struct client *cli
 		dolog("client[%d] %s: connected to %s:%d\n", client->fd, clientname, namebuf, port);
 	}
 	return fd;
+eval_errno:
+	if (fd >= 0) close(fd);
+	switch(errno) {
+		case ETIMEDOUT:
+			return -EC_TTL_EXPIRED;
+		case EPROTOTYPE:
+		case EPROTONOSUPPORT:
+		case EAFNOSUPPORT:
+			return -EC_ADDRESSTYPE_NOT_SUPPORTED;
+		case ECONNREFUSED:
+			return -EC_CONN_REFUSED;
+		case ENETDOWN:
+		case ENETUNREACH:
+			return -EC_NET_UNREACHABLE;
+		case EHOSTUNREACH:
+			return -EC_HOST_UNREACHABLE;
+		case EBADF:
+		default:
+		perror("socket/connect");
+		return -EC_GENERAL_FAILURE;
+	}
 }
 
 static int is_authed(union sockaddr_union *client, union sockaddr_union *authedip) {
