@@ -32,9 +32,10 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <limits.h>
+#include <vector>
+#include <algorithm>
 extern "C" {
 #include "server.h"
-#include "sblist.h"
 #include "privs.h"
 }
 
@@ -62,7 +63,8 @@ static const char* g_user_id;
 static const char* g_chroot;
 static const char* auth_user;
 static const char* auth_pass;
-static sblist* auth_ips;
+static bool use_auth_ips = false;
+static std::vector<sockaddr_union *> auth_ips;
 static pthread_rwlock_t auth_ips_lock = PTHREAD_RWLOCK_INITIALIZER;
 static const struct server* server;
 static union sockaddr_union bind_addr;
@@ -211,14 +213,14 @@ static int is_authed(union sockaddr_union *client, union sockaddr_union *authedi
 
 static int is_in_authed_list(union sockaddr_union *caddr) {
 	size_t i;
-	for(i=0;i<sblist_getsize(auth_ips);i++)
-		if(is_authed(caddr, static_cast<sockaddr_union *>(sblist_get(auth_ips, i))))
-			return 1;
+	for (auto i: auth_ips) {
+		if(is_authed(caddr, i)) return 1;
+	}
 	return 0;
 }
 
 static void add_auth_ip(union sockaddr_union *caddr) {
-	sblist_add(auth_ips, caddr);
+	auth_ips.push_back(caddr);
 }
 
 static enum authmethod check_auth_method(unsigned char *buf, size_t n, struct client*client) {
@@ -230,7 +232,7 @@ static enum authmethod check_auth_method(unsigned char *buf, size_t n, struct cl
 	while(idx < n && n_methods > 0) {
 		if(buf[idx] == AM_NO_AUTH) {
 			if(!auth_user) return AM_NO_AUTH;
-			else if(auth_ips) {
+			else if(use_auth_ips) {
 				int authed = 0;
 				if(pthread_rwlock_rdlock(&auth_ips_lock) == 0) {
 					authed = is_in_authed_list(&client->addr);
@@ -353,7 +355,7 @@ static void* clientthread(void *data) {
 				if(ret != EC_SUCCESS)
 					goto breakloop;
 				t->state = SS_3_AUTHED;
-				if(auth_ips && !pthread_rwlock_wrlock(&auth_ips_lock)) {
+				if(use_auth_ips && !pthread_rwlock_wrlock(&auth_ips_lock)) {
 					if(!is_in_authed_list(&t->client.addr))
 						add_auth_ip(&t->client.addr);
 					pthread_rwlock_unlock(&auth_ips_lock);
@@ -384,17 +386,16 @@ breakloop:
 	return 0;
 }
 
-static void collect(sblist *threads) {
-	size_t i;
-	for(i=0;i<sblist_getsize(threads);) {
-		struct thread* thread = *((struct thread**)sblist_get(threads, i));
-		if(thread->done) {
-			pthread_join(thread->pt, 0);
-			sblist_delete(threads, i);
-			free(thread);
-		} else
-			i++;
-	}
+static void collect(std::vector<thread *> &threads) {
+	threads.erase(std::remove_if(threads.begin(), threads.end(),
+                                     [&](thread *t) -> bool {
+                                        if (t->done) {
+                                            pthread_join(t->pt, 0);
+                                            free(t);
+                                            return true;
+                                        }
+                                        return false;
+                                     }), threads.end());
 }
 
 static int usage(void) {
@@ -429,7 +430,7 @@ int main(int argc, char** argv) {
 	while((ch = getopt(argc, argv, ":146b:u:C:U:P:i:p:")) != -1) {
 		switch(ch) {
 			case '1':
-				auth_ips = sblist_new(sizeof(union sockaddr_union), 8);
+				use_auth_ips = true;
 				break;
 			case '4':
 				allow_ipv6 = false;
@@ -471,7 +472,7 @@ int main(int argc, char** argv) {
 		dprintf(2, "error: user and pass must be used together\n");
 		return 1;
 	}
-	if(auth_ips && !auth_pass) {
+	if(use_auth_ips && !auth_pass) {
 		dprintf(2, "error: auth-once option must be used together with user/pass\n");
 		return 1;
 	}
@@ -481,7 +482,7 @@ int main(int argc, char** argv) {
 	}
 	signal(SIGPIPE, SIG_IGN);
 	struct server s;
-	sblist *threads = sblist_new(sizeof (struct thread*), 8);
+	std::vector<thread *> threads;
 	if(server_setup(&s, listenip, port)) {
 		perror("server_setup");
 		return 1;
@@ -514,21 +515,17 @@ int main(int argc, char** argv) {
 		collect(threads);
 		struct client c;
 		auto curr = static_cast<thread *>(malloc(sizeof (struct thread)));
-		if(!curr) goto oom;
+		if(!curr) {
+			usleep(16);
+			continue;
+		}
 		curr->done = 0;
 		if(server_waitclient(&s, &c)) {
 			free(curr);
 			continue;
 		}
 		curr->client = c;
-		if(!sblist_add(threads, &curr)) {
-			close(curr->client.fd);
-			free(curr);
-			oom:
-			dolog("rejecting connection due to OOM\n");
-			usleep(16); /* prevent 100% CPU usage in OOM situation */
-			continue;
-		}
+		threads.push_back(curr);
 		pthread_attr_t *a = 0, attr;
 		if(pthread_attr_init(&attr) == 0) {
 			a = &attr;
