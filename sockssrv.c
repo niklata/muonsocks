@@ -284,11 +284,24 @@ static void copyloop(int fd1, int fd2) {
 		int infd = (fds[0].revents & POLLIN) ? fd1 : fd2;
 		int outfd = infd == fd2 ? fd1 : fd2;
 		char buf[4096];
-		ssize_t sent = 0, n = read(infd, buf, sizeof buf);
-		if(n <= 0) return;
+		ssize_t sent = 0, n;
+read_retry:
+		n = read(infd, buf, sizeof buf);
+		if (n == 0) return;
+		if (n < 0) {
+			switch (errno) {
+			case EINTR:
+			case EAGAIN:
+				goto read_retry;
+			default: return;
+			}
+		}
 		while(sent < n) {
 			ssize_t m = write(outfd, buf+sent, n-sent);
-			if(m < 0) return;
+			if(m < 0) {
+				if (errno == EINTR) continue;
+				return;
+			}
 			sent += m;
 		}
 	}
