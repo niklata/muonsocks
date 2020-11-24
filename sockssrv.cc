@@ -100,7 +100,6 @@ enum errorcode {
 struct thread {
 	pthread_t pt;
 	struct client client;
-	enum socksstate state;
 	std::atomic<bool> done;
 };
 
@@ -334,17 +333,17 @@ static enum errorcode check_credentials(unsigned char* buf, size_t n) {
 
 static void* clientthread(void *data) {
 	auto t = static_cast<thread *>(data);
-	t->state = SS_1_CONNECTED;
+	enum socksstate state = SS_1_CONNECTED;
 	unsigned char buf[1024];
 	ssize_t n;
 	int remotefd = -1;
 	enum authmethod am;
 	while((n = recv(t->client.fd, buf, sizeof buf, 0)) > 0) {
-		switch(t->state) {
+		switch(state) {
 			case SS_1_CONNECTED:
 				am = check_auth_method(buf, n, &t->client);
-				if(am == AM_NO_AUTH) t->state = SS_3_AUTHED;
-				else if (am == AM_USERNAME) t->state = SS_2_NEED_AUTH;
+				if(am == AM_NO_AUTH) state = SS_3_AUTHED;
+				else if (am == AM_USERNAME) state = SS_2_NEED_AUTH;
 				if (send_auth_response(t->client.fd, 5, am) < 0) goto breakloop;
 				if(am == AM_INVALID) goto breakloop;
 				break;
@@ -353,7 +352,7 @@ static void* clientthread(void *data) {
 				if (send_auth_response(t->client.fd, 1, am) < 0) goto breakloop;
 				if(ret != EC_SUCCESS)
 					goto breakloop;
-				t->state = SS_3_AUTHED;
+				state = SS_3_AUTHED;
 				if(use_auth_ips && !pthread_rwlock_wrlock(&auth_ips_lock)) {
 					if(!is_in_authed_list(&t->client.addr))
 						add_auth_ip(&t->client.addr);
