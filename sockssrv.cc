@@ -32,6 +32,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <limits.h>
+#include <memory>
 #include <vector>
 #include <algorithm>
 extern "C" {
@@ -386,12 +387,11 @@ breakloop:
 	return 0;
 }
 
-static void collect(std::vector<thread *> &threads) {
+static void collect(std::vector<std::unique_ptr<thread>> &threads) {
 	threads.erase(std::remove_if(threads.begin(), threads.end(),
-                                     [&](thread *t) -> bool {
+                                     [&](std::unique_ptr<thread> &t) -> bool {
                                         if (t->done) {
                                             pthread_join(t->pt, 0);
-                                            free(t);
                                             return true;
                                         }
                                         return false;
@@ -482,7 +482,7 @@ int main(int argc, char** argv) {
 	}
 	signal(SIGPIPE, SIG_IGN);
 	struct server s;
-	std::vector<thread *> threads;
+	std::vector<std::unique_ptr<thread>> threads;
 	if(server_setup(&s, listenip, port)) {
 		perror("server_setup");
 		return 1;
@@ -514,24 +514,20 @@ int main(int argc, char** argv) {
 	while(1) {
 		collect(threads);
 		struct client c;
-		auto curr = static_cast<thread *>(malloc(sizeof (struct thread)));
-		if(!curr) {
-			usleep(16);
-			continue;
-		}
+		auto curr = std::make_unique<thread>();
 		curr->done = 0;
 		if(server_waitclient(&s, &c)) {
-			free(curr);
 			continue;
 		}
 		curr->client = c;
-		threads.push_back(curr);
+		threads.emplace_back(std::move(curr));
+		auto ct = threads.back().get();
 		pthread_attr_t *a = 0, attr;
 		if(pthread_attr_init(&attr) == 0) {
 			a = &attr;
 			pthread_attr_setstacksize(a, THREAD_STACK_SIZE);
 		}
-		if(pthread_create(&curr->pt, a, clientthread, curr) != 0)
+		if(pthread_create(&ct->pt, a, clientthread, ct) != 0)
 			dolog("pthread_create failed. OOM?\n");
 		if(a) pthread_attr_destroy(&attr);
 	}
