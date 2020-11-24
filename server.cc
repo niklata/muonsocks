@@ -2,13 +2,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <utility>
+#include "scopeguard.hpp"
 
 int resolve(const char *host, unsigned short port, int fam, struct addrinfo** addr) {
-	struct addrinfo hints = {
-		.ai_family = fam,
-		.ai_socktype = SOCK_STREAM,
-		.ai_flags = AI_PASSIVE,
-	};
+	struct addrinfo hints;
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = fam;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags = AI_PASSIVE;
 	char port_buf[8];
 	snprintf(port_buf, sizeof port_buf, "%u", port);
 	return getaddrinfo(host, port_buf, &hints, addr);
@@ -19,8 +21,8 @@ int resolve_sa(const char *host, unsigned short port, union sockaddr_union *res)
 	int ret;
 	SOCKADDR_UNION_AF(res) = AF_UNSPEC;
 	if((ret = resolve(host, port, AF_UNSPEC, &ainfo))) return ret;
+	SCOPE_EXIT { freeaddrinfo(ainfo); };
 	memcpy(res, ainfo->ai_addr, ainfo->ai_addrlen);
-	freeaddrinfo(ainfo);
 	return 0;
 }
 
@@ -33,12 +35,13 @@ int bindtoip(int fd, union sockaddr_union *bindaddr) {
 
 int server_waitclient(struct server *server, struct client* client) {
 	socklen_t clen = sizeof client->addr;
-	return ((client->fd = accept(server->fd, (void*)&client->addr, &clen)) == -1)*-1;
+	return ((client->fd = accept(server->fd, reinterpret_cast<sockaddr *>(&client->addr), &clen)) == -1)*-1;
 }
 
 int server_setup(struct server *server, const char* listenip, unsigned short port) {
 	struct addrinfo *ainfo = 0;
 	if(resolve(listenip, port, AF_UNSPEC, &ainfo)) return -1;
+	SCOPE_EXIT { freeaddrinfo(ainfo); };
 	struct addrinfo* p;
 	int listenfd = -1;
 	for(p = ainfo; p; p = p->ai_next) {
@@ -53,7 +56,6 @@ int server_setup(struct server *server, const char* listenip, unsigned short por
 		}
 		break;
 	}
-	freeaddrinfo(ainfo);
 	if(listenfd < 0) return -2;
 	if(listen(listenfd, SOMAXCONN) < 0) {
 		close(listenfd);

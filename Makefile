@@ -5,7 +5,7 @@ prefix = /usr/local
 bindir = $(prefix)/bin
 
 PROG = microsocks
-SRCS =  sockssrv.cc server.c log.c privs.c
+SRCS =  sockssrv.cc server.cc log.c privs.c
 OBJS = sockssrv.o server.o log.o privs.o
 #OBJS = $(SRCS:.c=.o)
 

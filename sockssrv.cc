@@ -36,8 +36,8 @@
 #include <vector>
 #include <algorithm>
 #include "scopeguard.hpp"
-extern "C" {
 #include "server.h"
+extern "C" {
 #include "privs.h"
 }
 
