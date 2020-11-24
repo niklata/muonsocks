@@ -26,7 +26,6 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#define _XOPEN_SOURCE
 #include <stdio.h>
 #include <strings.h>
 #include <stdarg.h>

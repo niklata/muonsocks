@@ -21,9 +21,7 @@
 
 */
 
-#define _GNU_SOURCE
 #include <unistd.h>
-#define _POSIX_C_SOURCE 200809L
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
@@ -247,18 +245,20 @@ static enum authmethod check_auth_method(unsigned char *buf, size_t n, struct cl
 	return AM_INVALID;
 }
 
-static void send_auth_response(int fd, int version, enum authmethod meth) {
-	unsigned char buf[2];
+static int send_auth_response(int fd, int version, enum authmethod meth) {
+	char buf[2];
 	buf[0] = version;
 	buf[1] = meth;
-	write(fd, buf, 2);
+	ssize_t r = write(fd, buf, sizeof buf);
+	return r == sizeof buf ? r : -1;
 }
 
-static void send_error(int fd, enum errorcode ec) {
+static int send_error(int fd, enum errorcode ec) {
 	/* position 4 contains ATYP, the address type, which is the same as used in the connect
 	   request. we're lazy and return always IPV4 address type in errors. */
 	char buf[10] = { 5, ec, 0, 1 /*AT_IPV4*/, 0,0,0,0, 0,0 };
-	write(fd, buf, 10);
+	ssize_t r = write(fd, buf, sizeof buf);
+	return r == sizeof buf ? r : -1;
 }
 
 static void copyloop(int fd1, int fd2) {
@@ -272,6 +272,7 @@ static void copyloop(int fd1, int fd2) {
 		   usually programs send keep-alive packets so this should only happen
 		   when a connection is really unused. */
 		switch(poll(fds, 2, 60*15*1000)) {
+			default: break;
 			case 0:
 				send_error(fd1, EC_TTL_EXPIRED);
 				return;
@@ -324,12 +325,12 @@ static void* clientthread(void *data) {
 				am = check_auth_method(buf, n, &t->client);
 				if(am == AM_NO_AUTH) t->state = SS_3_AUTHED;
 				else if (am == AM_USERNAME) t->state = SS_2_NEED_AUTH;
-				send_auth_response(t->client.fd, 5, am);
+				if (send_auth_response(t->client.fd, 5, am) < 0) goto breakloop;
 				if(am == AM_INVALID) goto breakloop;
 				break;
 			case SS_2_NEED_AUTH:
 				ret = check_credentials(buf, n);
-				send_auth_response(t->client.fd, 1, ret);
+				if (send_auth_response(t->client.fd, 1, ret) < 0) goto breakloop;
 				if(ret != EC_SUCCESS)
 					goto breakloop;
 				t->state = SS_3_AUTHED;
@@ -346,7 +347,7 @@ static void* clientthread(void *data) {
 					goto breakloop;
 				}
 				remotefd = ret;
-				send_error(t->client.fd, EC_SUCCESS);
+				if (send_error(t->client.fd, EC_SUCCESS) < 0) goto breakloop;
 				copyloop(t->client.fd, remotefd);
 				goto breakloop;
 

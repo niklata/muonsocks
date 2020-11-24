@@ -10,7 +10,7 @@ OBJS = $(SRCS:.c=.o)
 
 LIBS = -lpthread
 
-CFLAGS += -Wall -std=c99
+CFLAGS += -Wall -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
 
 -include config.mak
 
