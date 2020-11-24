@@ -30,6 +30,7 @@ union sockaddr_union {
 struct client {
 	union sockaddr_union addr;
 	int fd;
+	int socksver;
 };
 
 struct server {
