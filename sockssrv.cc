@@ -36,6 +36,8 @@
 #include <vector>
 #include <algorithm>
 #include <atomic>
+#include <mutex>
+#include <shared_mutex>
 #include "scopeguard.hpp"
 #include "server.h"
 extern "C" {
@@ -70,7 +72,7 @@ static const char* auth_user;
 static const char* auth_pass;
 static bool use_auth_ips = false;
 static std::vector<sockaddr_union *> auth_ips;
-static pthread_rwlock_t auth_ips_lock = PTHREAD_RWLOCK_INITIALIZER;
+static std::shared_mutex auth_ips_mtx;
 static const struct server* server;
 static union sockaddr_union bind_addr;
 
@@ -274,9 +276,9 @@ static void* clientthread(void *data) {
                     break;
                 } else if (use_auth_ips) {
                     bool authed = 0;
-                    if (pthread_rwlock_rdlock(&auth_ips_lock) == 0) {
+                    {
+                        std::shared_lock mtx(auth_ips_mtx);
                         authed = is_in_authed_list(&t->client.addr);
-                        pthread_rwlock_unlock(&auth_ips_lock);
                     }
                     if (authed) {
                         am = AM_NO_AUTH;
@@ -309,10 +311,10 @@ static void* clientthread(void *data) {
             pass[plen] = 0;
             bool allow = !strcmp(user, auth_user) && !strcmp(pass, auth_pass);
             if (!allow) return nullptr;
-            if (use_auth_ips && !pthread_rwlock_wrlock(&auth_ips_lock)) {
+            if (use_auth_ips) {
+                std::unique_lock mtx(auth_ips_mtx);
                 if (!is_in_authed_list(&t->client.addr))
                     add_auth_ip(&t->client.addr);
-                pthread_rwlock_unlock(&auth_ips_lock);
             }
             if (send_auth_response(t->client.fd, 1, am) < 0) return nullptr;
             RESET_BUF();
