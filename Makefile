@@ -14,6 +14,10 @@ LIBS = -lpthread
 CFLAGS += -std=c99 -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
 CPPFLAGS += -std=gnu++17 -fno-rtti -fno-exceptions -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
 
+#CFLAGS += -fsanitize=undefined
+#CPPFLAGS += -fsanitize=undefined
+#LDFLAGS += -fsanitize=undefined
+
 -include config.mak
 
 all: $(PROG)
