@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <netinet/tcp.h>
 #include <utility>
 #include "scopeguard.hpp"
 
@@ -34,8 +35,14 @@ int bindtoip(int fd, union sockaddr_union *bindaddr) {
 }
 
 int server_waitclient(struct server *server, struct client* client) {
-	socklen_t clen = sizeof client->addr;
-	return ((client->fd = accept(server->fd, reinterpret_cast<sockaddr *>(&client->addr), &clen)) == -1)*-1;
+    socklen_t clen = sizeof client->addr;
+    client->fd = accept(server->fd, reinterpret_cast<sockaddr *>(&client->addr), &clen);
+    if (client->fd == -1) return -1;
+    int flags = 1;
+    if (setsockopt(client->fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0) {
+        dprintf(2, "failed to set TCP_NODELAY on client socket\n");
+    }
+    return 0;
 }
 
 int server_setup(struct server *server, const char* listenip, unsigned short port) {

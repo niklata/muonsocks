@@ -30,6 +30,7 @@
 #include <signal.h>
 #include <poll.h>
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <errno.h>
 #include <limits.h>
 #include <memory>
@@ -445,6 +446,10 @@ static void* clientthread(void *data) {
         return nullptr;
     }
     SCOPE_EXIT { close(fd); };
+    int flags = 1;
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0) {
+        dprintf(2, "failed to set TCP_NODELAY on remote socket\n");
+    }
     if (SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1) {
         send_error(t->client, t->client.fd, errno_to_sockscode());
         return nullptr;
@@ -608,7 +613,7 @@ int main(int argc, char** argv) {
 			pthread_attr_setstacksize(a, THREAD_STACK_SIZE);
 		}
 		if(pthread_create(&ct->pt, a, clientthread, ct) != 0)
-			dolog("pthread_create failed. OOM?\n");
+			dprintf(2, "pthread_create failed. OOM?\n");
 		if(a) pthread_attr_destroy(&attr);
 	}
 }
