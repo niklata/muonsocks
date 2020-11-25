@@ -123,7 +123,6 @@ static int is_authed(union sockaddr_union *client, union sockaddr_union *authedi
 }
 
 static int is_in_authed_list(union sockaddr_union *caddr) {
-	size_t i;
 	for (auto i: auth_ips) {
 		if(is_authed(caddr, i)) return 1;
 	}
@@ -160,8 +159,8 @@ static int send_error(const client &c, int fd, enum errorcode ec) {
 
 static void copyloop(const client &c, int fd1, int fd2, char *buf) {
 	struct pollfd fds[2] = {
-		[0] = {.fd = fd1, .events = POLLIN},
-		[1] = {.fd = fd2, .events = POLLIN},
+		{ fd1, POLLIN, 0},
+		{ fd2, POLLIN, 0},
 	};
 
 	while(1) {
@@ -266,9 +265,9 @@ static void* clientthread(void *data) {
     t->client.socksver = buf[0];
     if (t->client.socksver == 5) {
         while (buflen < 2) { EXTEND_BUF(); }
-        int n_methods = buf[1];
+        size_t n_methods = buf[1];
         while (buflen < 2 + n_methods) { EXTEND_BUF(); }
-        for (int i = 0; i < n_methods; ++i) {
+        for (size_t i = 0; i < n_methods; ++i) {
             if (buf[2 + i] == AM_NO_AUTH) {
                 if (!auth_user) {
                     am = AM_NO_AUTH;
