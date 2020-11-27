@@ -96,11 +96,11 @@ static std::shared_mutex auth_ips_mtx;
 static const struct server* server;
 static union sockaddr_union bind_addr;
 
-enum authmethod {
+enum authmethod : char {
     AM_NO_AUTH = 0,
     AM_GSSAPI = 1,
     AM_USERNAME = 2,
-    AM_INVALID = 0xFF
+    AM_INVALID = -1
 };
 
 enum errorcode {
@@ -128,33 +128,32 @@ static void dolog(const char* fmt, ...) { }
 #endif
 
 static int resolve(const char *host, unsigned short port, int fam, struct addrinfo** addr) {
-	struct addrinfo hints;
-	memset(&hints, 0, sizeof hints);
-	hints.ai_family = fam;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags = AI_PASSIVE;
-	char port_buf[8];
-	auto r = std::to_chars(port_buf, port_buf + sizeof port_buf, port);
-	if (r.ec != std::errc()) return EAI_SYSTEM;
-	*r.ptr = 0;
-	return getaddrinfo(host, port_buf, &hints, addr);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = fam;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+    char port_buf[8];
+    auto r = std::to_chars(port_buf, port_buf + sizeof port_buf, port);
+    if (r.ec != std::errc()) return EAI_SYSTEM;
+    *r.ptr = 0;
+    return getaddrinfo(host, port_buf, &hints, addr);
 }
 
 static int resolve_sa(const char *host, unsigned short port, union sockaddr_union *res) {
-	struct addrinfo *ainfo = 0;
-	int ret;
-	SOCKADDR_UNION_AF(res) = AF_UNSPEC;
-	if ((ret = resolve(host, port, AF_UNSPEC, &ainfo))) return ret;
-	SCOPE_EXIT { freeaddrinfo(ainfo); };
-	memcpy(res, ainfo->ai_addr, ainfo->ai_addrlen);
-	return 0;
+    struct addrinfo *ainfo = 0;
+    int ret;
+    SOCKADDR_UNION_AF(res) = AF_UNSPEC;
+    if ((ret = resolve(host, port, AF_UNSPEC, &ainfo))) return ret;
+    SCOPE_EXIT { freeaddrinfo(ainfo); };
+    memcpy(res, ainfo->ai_addr, ainfo->ai_addrlen);
+    return 0;
 }
 
 static int bindtoip(int fd, union sockaddr_union *bindaddr) {
-	socklen_t sz = SOCKADDR_UNION_LENGTH(bindaddr);
-	if (sz)
-		return bind(fd, (struct sockaddr*) bindaddr, sz);
-	return 0;
+    socklen_t sz = SOCKADDR_UNION_LENGTH(bindaddr);
+    if (!sz) return 0;
+    return bind(fd, (struct sockaddr*) bindaddr, sz);
 }
 
 static int server_waitclient(struct server *server, struct client* client) {
@@ -169,59 +168,59 @@ static int server_waitclient(struct server *server, struct client* client) {
 }
 
 static int server_setup(struct server *server, const char* listenip, unsigned short port) {
-	struct addrinfo *ainfo = 0;
-	if (resolve(listenip, port, AF_UNSPEC, &ainfo)) return -1;
-	SCOPE_EXIT { freeaddrinfo(ainfo); };
-	struct addrinfo* p;
-	int listenfd = -1;
-	for (p = ainfo; p; p = p->ai_next) {
-		if ((listenfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0)
-			continue;
-		int yes = 1;
-		setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int));
-		if (bind(listenfd, p->ai_addr, p->ai_addrlen) < 0) {
-			close(listenfd);
-			listenfd = -1;
-			continue;
-		}
-		break;
-	}
-	if (listenfd < 0) return -2;
-	if (listen(listenfd, SOMAXCONN) < 0) {
-		close(listenfd);
-		return -3;
-	}
-	server->fd = listenfd;
-	return 0;
+    struct addrinfo *ainfo = nullptr;
+    if (resolve(listenip, port, AF_UNSPEC, &ainfo)) return -1;
+    SCOPE_EXIT { freeaddrinfo(ainfo); };
+    int listenfd = -1;
+    for (auto p = ainfo; p; p = p->ai_next) {
+        if ((listenfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0)
+            continue;
+        int yes = 1;
+        if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes) < 0) {
+            dprintf(2, "failed to set SO_REUSEADDR on listen socket\n");
+        }
+        if (bind(listenfd, p->ai_addr, p->ai_addrlen) < 0) {
+            close(listenfd);
+            listenfd = -1;
+            continue;
+        }
+        break;
+    }
+    if (listenfd < 0) return -2;
+    if (listen(listenfd, SOMAXCONN) < 0) {
+        close(listenfd);
+        return -3;
+    }
+    server->fd = listenfd;
+    return 0;
 }
+
 static int is_authed(union sockaddr_union *client, union sockaddr_union *authedip) {
-	int af = SOCKADDR_UNION_AF(authedip);
-	if (af == SOCKADDR_UNION_AF(client)) {
-		size_t cmpbytes = af == AF_INET ? 4 : 16;
-		void *cmp1 = SOCKADDR_UNION_ADDRESS(client);
-		void *cmp2 = SOCKADDR_UNION_ADDRESS(authedip);
-		if (!memcmp(cmp1, cmp2, cmpbytes)) return 1;
-	}
-	return 0;
+    int af = SOCKADDR_UNION_AF(authedip);
+    if (af == SOCKADDR_UNION_AF(client)) {
+        size_t cmpbytes = af == AF_INET ? 4 : 16;
+        auto cmp1 = SOCKADDR_UNION_ADDRESS(client);
+        auto cmp2 = SOCKADDR_UNION_ADDRESS(authedip);
+        if (!memcmp(cmp1, cmp2, cmpbytes)) return 1;
+    }
+    return 0;
 }
 
 static int is_in_authed_list(union sockaddr_union *caddr) {
-	for (auto i: auth_ips) {
-		if (is_authed(caddr, i)) return 1;
-	}
-	return 0;
+    for (auto i: auth_ips) {
+        if (is_authed(caddr, i)) return 1;
+    }
+    return 0;
 }
 
 static void add_auth_ip(union sockaddr_union *caddr) {
-	auth_ips.push_back(caddr);
+    auth_ips.push_back(caddr);
 }
 
-static int send_auth_response(int fd, int version, enum authmethod meth) {
-	char buf[2];
-	buf[0] = version;
-	buf[1] = meth;
-	ssize_t r = write(fd, buf, sizeof buf);
-	return r == sizeof buf ? r : -1;
+static int send_auth_response(int fd, char version, enum authmethod method) {
+    char buf[2] = { version, method };
+    ssize_t r = write(fd, buf, sizeof buf);
+    return r == sizeof buf ? r : -1;
 }
 
 static int send_error(const client &c, int fd, enum errorcode ec) {
@@ -241,53 +240,51 @@ static int send_error(const client &c, int fd, enum errorcode ec) {
 }
 
 static void copyloop(const client &c, int fd1, int fd2, char *buf) {
-	struct pollfd fds[2] = {
-		{ fd1, POLLIN, 0},
-		{ fd2, POLLIN, 0},
-	};
+    struct pollfd fds[2] = {
+        { fd1, POLLIN, 0},
+        { fd2, POLLIN, 0},
+    };
 
-	for (;;) {
-		/* inactive connections are reaped after 15 min to free resources.
-		   usually programs send keep-alive packets so this should only happen
-		   when a connection is really unused. */
-		switch (poll(fds, 2, 60*15*1000)) {
-			default: break;
-			case 0:
-				send_error(c, fd1, EC_TTL_EXPIRED);
-				return;
-			case -1:
-				if (errno == EINTR || errno == EAGAIN) continue;
-				else perror("poll");
-				return;
-		}
-		int infd = (fds[0].revents & POLLIN) ? fd1 : fd2;
-		int outfd = infd == fd2 ? fd1 : fd2;
-		ssize_t sent, n;
-		int cycles = MAX_BATCH;
+    for (;;) {
+        /* inactive connections are reaped after 15 min to free resources.
+           usually programs send keep-alive packets so this should only happen
+           when a connection is really unused. */
+        switch (poll(fds, 2, 60*15*1000)) {
+        default: break;
+        case 0:
+                 send_error(c, fd1, EC_TTL_EXPIRED);
+                 return;
+        case -1:
+                 if (errno == EINTR || errno == EAGAIN) continue;
+                 else perror("poll");
+                 return;
+        }
+        int infd = (fds[0].revents & POLLIN) ? fd1 : fd2;
+        int outfd = infd == fd2 ? fd1 : fd2;
+        ssize_t sent, n;
+        int cycles = MAX_BATCH;
 read_retry:
-		sent = 0;
-		if (--cycles <= 0) continue; // Don't let one channel monopolize.
-		n = recv(infd, buf, BUF_SIZE, MSG_DONTWAIT);
-		if (n == 0) return;
-		if (n < 0) {
-			switch (errno) {
-			case EINTR:
-				goto read_retry;
-			case EAGAIN:
-				continue;
-			default: return;
-			}
-		}
-		while (sent < n) {
-			ssize_t m = write(outfd, buf+sent, n-sent);
-			if (m < 0) {
-				if (errno == EINTR) continue;
-				return;
-			}
-			sent += m;
-		}
-		goto read_retry;
-	}
+        sent = 0;
+        if (--cycles <= 0) continue; // Don't let one channel monopolize.
+        n = recv(infd, buf, BUF_SIZE, MSG_DONTWAIT);
+        if (n == 0) return;
+        if (n < 0) {
+            switch (errno) {
+            case EINTR: goto read_retry;
+            case EAGAIN: continue;
+            default: return;
+            }
+        }
+        while (sent < n) {
+            ssize_t m = write(outfd, buf+sent, n-sent);
+            if (m < 0) {
+                if (errno == EINTR) continue;
+                return;
+            }
+            sent += m;
+        }
+        goto read_retry;
+    }
 }
 
 static bool extend_cbuf(const thread *t, char *buf, size_t &buflen)
@@ -553,32 +550,32 @@ static void* clientthread(void *data) {
 }
 
 static void collect(std::vector<std::unique_ptr<thread>> &threads) {
-	threads.erase(std::remove_if(threads.begin(), threads.end(),
-                                     [&](std::unique_ptr<thread> &t) -> bool {
-                                        if (t->done) {
-                                            pthread_join(t->pt, 0);
-                                            return true;
-                                        }
-                                        return false;
-                                     }), threads.end());
+threads.erase(std::remove_if(threads.begin(), threads.end(),
+                             [&](std::unique_ptr<thread> &t) -> bool {
+                                if (t->done) {
+                                    pthread_join(t->pt, 0);
+                                    return true;
+                                }
+                                return false;
+                             }), threads.end());
 }
 
 static int usage(void) {
-	dprintf(2,
-		"MicroSocks SOCKS5 Server\n"
-		"------------------------\n"
-		"usage: microsocks -1 -i listenip -p port -u user -P password -b bindaddr\n"
-		"all arguments are optional.\n"
-		"by default listenip is 0.0.0.0 and port 1080.\n\n"
-		"option -b specifies which ip outgoing connections are bound to\n"
-		"option -1 activates auth_once mode: once a specific ip address\n"
-		"authed successfully with user/pass, it is added to a whitelist\n"
-		"and may use the proxy without auth.\n"
-		"this is handy for programs like firefox that don't support\n"
-		"user/pass auth. for it to work you'd basically make one connection\n"
-		"with another program that supports it, and then you can use firefox too.\n"
-	);
-	return 1;
+    dprintf(2,
+            "MicroSocks SOCKS5 Server\n"
+            "------------------------\n"
+            "usage: microsocks -1 -i listenip -p port -u user -P password -b bindaddr\n"
+            "all arguments are optional.\n"
+            "by default listenip is 0.0.0.0 and port 1080.\n\n"
+            "option -b specifies which ip outgoing connections are bound to\n"
+            "option -1 activates auth_once mode: once a specific ip address\n"
+            "authed successfully with user/pass, it is added to a whitelist\n"
+            "and may use the proxy without auth.\n"
+            "this is handy for programs like firefox that don't support\n"
+            "user/pass auth. for it to work you'd basically make one connection\n"
+            "with another program that supports it, and then you can use firefox too.\n"
+    );
+    return 1;
 }
 
 /* prevent username and password from showing up in top. */
@@ -587,111 +584,110 @@ static void zero_arg(char *s) {
 }
 
 int main(int argc, char** argv) {
-	bind_addr.v4.sin_family = AF_UNSPEC;
-	int ch;
-	const char *listenip = "0.0.0.0";
-	unsigned port = 1080;
-	while ((ch = getopt(argc, argv, ":146b:u:C:U:P:i:p:")) != -1) {
-		switch (ch) {
-			case '1':
-				use_auth_ips = true;
-				break;
-			case '4':
-				allow_ipv6 = false;
-				break;
-			case '6':
-				allow_ipv4 = false;
-				break;
-			case 'b':
-				resolve_sa(optarg, 0, &bind_addr);
-				break;
-			case 'u':
-				g_user_id = strdup(optarg);
-				break;
-			case 'C':
-				g_chroot = strdup(optarg);
-				break;
-			case 'U':
-				auth_user = strdup(optarg);
-				zero_arg(optarg);
-				break;
-			case 'P':
-				auth_pass = strdup(optarg);
-				zero_arg(optarg);
-				break;
-			case 'i':
-				listenip = optarg;
-				break;
-			case 'p':
-				port = atoi(optarg);
-				break;
-			case ':':
-				dprintf(2, "error: option -%c requires an operand\n", optopt);
-				/* fall through */
-			case '?':
-				return usage();
-		}
-	}
-	if ((auth_user && !auth_pass) || (!auth_user && auth_pass)) {
-		dprintf(2, "error: user and pass must be used together\n");
-		return 1;
-	}
-	if (use_auth_ips && !auth_pass) {
-		dprintf(2, "error: auth-once option must be used together with user/pass\n");
-		return 1;
-	}
-	if (!allow_ipv6 && !allow_ipv4) {
-		dprintf(2, "error: -4 and -6 options cannot be used together\n");
-		return 1;
-	}
-	signal(SIGPIPE, SIG_IGN);
-	struct server s;
-	std::vector<std::unique_ptr<thread>> threads;
-	if (server_setup(&s, listenip, port)) {
-		perror("server_setup");
-		return 1;
-	}
-	server = &s;
+    bind_addr.v4.sin_family = AF_UNSPEC;
+    int ch;
+    const char *listenip = "0.0.0.0";
+    unsigned port = 1080;
+    while ((ch = getopt(argc, argv, ":146b:u:C:U:P:i:p:")) != -1) {
+        switch (ch) {
+        case '1':
+            use_auth_ips = true;
+            break;
+        case '4':
+            allow_ipv6 = false;
+            break;
+        case '6':
+            allow_ipv4 = false;
+            break;
+        case 'b':
+            resolve_sa(optarg, 0, &bind_addr);
+            break;
+        case 'u':
+            g_user_id = strdup(optarg);
+            break;
+        case 'C':
+            g_chroot = strdup(optarg);
+            break;
+        case 'U':
+            auth_user = strdup(optarg);
+            zero_arg(optarg);
+            break;
+        case 'P':
+            auth_pass = strdup(optarg);
+            zero_arg(optarg);
+            break;
+        case 'i':
+            listenip = optarg;
+            break;
+        case 'p':
+            port = atoi(optarg);
+            break;
+        case ':':
+            dprintf(2, "error: option -%c requires an operand\n", optopt);
+            /* fall through */
+        case '?':
+            return usage();
+        }
+    }
+    if ((auth_user && !auth_pass) || (!auth_user && auth_pass)) {
+        dprintf(2, "error: user and pass must be used together\n");
+        return 1;
+    }
+    if (use_auth_ips && !auth_pass) {
+        dprintf(2, "error: auth-once option must be used together with user/pass\n");
+        return 1;
+    }
+    if (!allow_ipv6 && !allow_ipv4) {
+        dprintf(2, "error: -4 and -6 options cannot be used together\n");
+        return 1;
+    }
+    signal(SIGPIPE, SIG_IGN);
+    struct server s;
+    std::vector<std::unique_ptr<thread>> threads;
+    if (server_setup(&s, listenip, port)) {
+        perror("server_setup");
+        return 1;
+    }
+    server = &s;
 
-	/* This is tricky -- we *must* use a name that will not be in hosts,
-	 * otherwise, at least with eglibc, the resolve and NSS libraries will not
-	 * be properly loaded.  The '.invalid' label is RFC-guaranteed to never
-	 * be installed into the root zone, so we use that to avoid harassing
-	 * DNS servers at start.
-	 */
-	(void) gethostbyname("fail.invalid");
+    /* This is tricky -- we *must* use a name that will not be in hosts,
+     * otherwise, at least with eglibc, the resolve and NSS libraries will not
+     * be properly loaded.  The '.invalid' label is RFC-guaranteed to never
+     * be installed into the root zone, so we use that to avoid harassing
+     * DNS servers at start.
+     */
+    (void) gethostbyname("fail.invalid");
 
-	uid_t nsocks_uid;
-	gid_t nsocks_gid;
-	if (g_user_id) {
-		if (nk_uidgidbyname(g_user_id, &nsocks_uid, &nsocks_gid)) {
-			dprintf(2, "invalid user '%s' specified\n", g_user_id);
-			return 1;
-		}
-	}
-	if (g_chroot)
-		nk_set_chroot(g_chroot);
-	if (g_user_id)
-		nk_set_uidgid(nsocks_uid, nsocks_gid, NULL, 0);
+    uid_t nsocks_uid;
+    gid_t nsocks_gid;
+    if (g_user_id) {
+        if (nk_uidgidbyname(g_user_id, &nsocks_uid, &nsocks_gid)) {
+            dprintf(2, "invalid user '%s' specified\n", g_user_id);
+            return 1;
+        }
+    }
+    if (g_chroot)
+        nk_set_chroot(g_chroot);
+    if (g_user_id)
+        nk_set_uidgid(nsocks_uid, nsocks_gid, NULL, 0);
 
-	for (;;) {
-		collect(threads);
-		struct client c;
-		auto curr = std::make_unique<thread>();
-		curr->done = false;
-		if (server_waitclient(&s, &c)) {
-			continue;
-		}
-		curr->client = c;
-		threads.emplace_back(std::move(curr));
-		auto ct = threads.back().get();
-		pthread_attr_t *a = 0, attr;
-		if (pthread_attr_init(&attr) == 0) {
-			a = &attr;
-			pthread_attr_setstacksize(a, THREAD_STACK_SIZE);
-		}
-		if (pthread_create(&ct->pt, a, clientthread, ct) != 0)
-			dprintf(2, "pthread_create failed. OOM?\n");
-		if (a) pthread_attr_destroy(&attr);
-	}
+    for (;;) {
+        collect(threads);
+        struct client c;
+        auto curr = std::make_unique<thread>();
+        curr->done = false;
+        if (server_waitclient(&s, &c))
+            continue;
+        curr->client = c;
+        threads.emplace_back(std::move(curr));
+        auto ct = threads.back().get();
+        pthread_attr_t *a = 0, attr;
+        if (pthread_attr_init(&attr) == 0) {
+            a = &attr;
+            pthread_attr_setstacksize(a, THREAD_STACK_SIZE);
+        }
+        if (pthread_create(&ct->pt, a, clientthread, ct) != 0)
+            dprintf(2, "pthread_create failed. OOM?\n");
+        if (a) pthread_attr_destroy(&attr);
+    }
 }
