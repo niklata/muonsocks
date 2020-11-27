@@ -65,21 +65,22 @@ extern "C" {
 #endif
 
 #define BUF_SIZE 4096
+#define MAX_BATCH 32
 
 struct client {
-	union sockaddr_union addr;
-	int fd;
-	int socksver;
+    union sockaddr_union addr;
+    int fd;
+    int socksver;
 };
 
 struct server {
-	int fd;
+    int fd;
 };
 
 struct thread {
-	pthread_t pt;
-	struct client client;
-	std::atomic<bool> done;
+    pthread_t pt;
+    struct client client;
+    std::atomic<bool> done;
 };
 
 static bool allow_ipv4 = true;
@@ -95,22 +96,22 @@ static const struct server* server;
 static union sockaddr_union bind_addr;
 
 enum authmethod {
-	AM_NO_AUTH = 0,
-	AM_GSSAPI = 1,
-	AM_USERNAME = 2,
-	AM_INVALID = 0xFF
+    AM_NO_AUTH = 0,
+    AM_GSSAPI = 1,
+    AM_USERNAME = 2,
+    AM_INVALID = 0xFF
 };
 
 enum errorcode {
-	EC_SUCCESS = 0,
-	EC_GENERAL_FAILURE = 1,
-	EC_NOT_ALLOWED = 2,
-	EC_NET_UNREACHABLE = 3,
-	EC_HOST_UNREACHABLE = 4,
-	EC_CONN_REFUSED = 5,
-	EC_TTL_EXPIRED = 6,
-	EC_COMMAND_NOT_SUPPORTED = 7,
-	EC_ADDRESSTYPE_NOT_SUPPORTED = 8,
+    EC_SUCCESS = 0,
+    EC_GENERAL_FAILURE = 1,
+    EC_NOT_ALLOWED = 2,
+    EC_NET_UNREACHABLE = 3,
+    EC_HOST_UNREACHABLE = 4,
+    EC_CONN_REFUSED = 5,
+    EC_TTL_EXPIRED = 6,
+    EC_COMMAND_NOT_SUPPORTED = 7,
+    EC_ADDRESSTYPE_NOT_SUPPORTED = 8,
 };
 
 #ifndef CONFIG_LOG
@@ -140,7 +141,7 @@ static int resolve_sa(const char *host, unsigned short port, union sockaddr_unio
 	struct addrinfo *ainfo = 0;
 	int ret;
 	SOCKADDR_UNION_AF(res) = AF_UNSPEC;
-	if((ret = resolve(host, port, AF_UNSPEC, &ainfo))) return ret;
+	if ((ret = resolve(host, port, AF_UNSPEC, &ainfo))) return ret;
 	SCOPE_EXIT { freeaddrinfo(ainfo); };
 	memcpy(res, ainfo->ai_addr, ainfo->ai_addrlen);
 	return 0;
@@ -148,7 +149,7 @@ static int resolve_sa(const char *host, unsigned short port, union sockaddr_unio
 
 static int bindtoip(int fd, union sockaddr_union *bindaddr) {
 	socklen_t sz = SOCKADDR_UNION_LENGTH(bindaddr);
-	if(sz)
+	if (sz)
 		return bind(fd, (struct sockaddr*) bindaddr, sz);
 	return 0;
 }
@@ -166,24 +167,24 @@ static int server_waitclient(struct server *server, struct client* client) {
 
 static int server_setup(struct server *server, const char* listenip, unsigned short port) {
 	struct addrinfo *ainfo = 0;
-	if(resolve(listenip, port, AF_UNSPEC, &ainfo)) return -1;
+	if (resolve(listenip, port, AF_UNSPEC, &ainfo)) return -1;
 	SCOPE_EXIT { freeaddrinfo(ainfo); };
 	struct addrinfo* p;
 	int listenfd = -1;
-	for(p = ainfo; p; p = p->ai_next) {
-		if((listenfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0)
+	for (p = ainfo; p; p = p->ai_next) {
+		if ((listenfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0)
 			continue;
 		int yes = 1;
 		setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int));
-		if(bind(listenfd, p->ai_addr, p->ai_addrlen) < 0) {
+		if (bind(listenfd, p->ai_addr, p->ai_addrlen) < 0) {
 			close(listenfd);
 			listenfd = -1;
 			continue;
 		}
 		break;
 	}
-	if(listenfd < 0) return -2;
-	if(listen(listenfd, SOMAXCONN) < 0) {
+	if (listenfd < 0) return -2;
+	if (listen(listenfd, SOMAXCONN) < 0) {
 		close(listenfd);
 		return -3;
 	}
@@ -192,18 +193,18 @@ static int server_setup(struct server *server, const char* listenip, unsigned sh
 }
 static int is_authed(union sockaddr_union *client, union sockaddr_union *authedip) {
 	int af = SOCKADDR_UNION_AF(authedip);
-	if(af == SOCKADDR_UNION_AF(client)) {
+	if (af == SOCKADDR_UNION_AF(client)) {
 		size_t cmpbytes = af == AF_INET ? 4 : 16;
 		void *cmp1 = SOCKADDR_UNION_ADDRESS(client);
 		void *cmp2 = SOCKADDR_UNION_ADDRESS(authedip);
-		if(!memcmp(cmp1, cmp2, cmpbytes)) return 1;
+		if (!memcmp(cmp1, cmp2, cmpbytes)) return 1;
 	}
 	return 0;
 }
 
 static int is_in_authed_list(union sockaddr_union *caddr) {
 	for (auto i: auth_ips) {
-		if(is_authed(caddr, i)) return 1;
+		if (is_authed(caddr, i)) return 1;
 	}
 	return 0;
 }
@@ -242,24 +243,24 @@ static void copyloop(const client &c, int fd1, int fd2, char *buf) {
 		{ fd2, POLLIN, 0},
 	};
 
-	while(1) {
+	for (;;) {
 		/* inactive connections are reaped after 15 min to free resources.
 		   usually programs send keep-alive packets so this should only happen
 		   when a connection is really unused. */
-		switch(poll(fds, 2, 60*15*1000)) {
+		switch (poll(fds, 2, 60*15*1000)) {
 			default: break;
 			case 0:
 				send_error(c, fd1, EC_TTL_EXPIRED);
 				return;
 			case -1:
-				if(errno == EINTR || errno == EAGAIN) continue;
+				if (errno == EINTR || errno == EAGAIN) continue;
 				else perror("poll");
 				return;
 		}
 		int infd = (fds[0].revents & POLLIN) ? fd1 : fd2;
 		int outfd = infd == fd2 ? fd1 : fd2;
 		ssize_t sent, n;
-		int cycles = 32;
+		int cycles = MAX_BATCH;
 read_retry:
 		sent = 0;
 		if (--cycles <= 0) continue; // Don't let one channel monopolize.
@@ -274,9 +275,9 @@ read_retry:
 			default: return;
 			}
 		}
-		while(sent < n) {
+		while (sent < n) {
 			ssize_t m = write(outfd, buf+sent, n-sent);
-			if(m < 0) {
+			if (m < 0) {
 				if (errno == EINTR) continue;
 				return;
 			}
@@ -306,7 +307,7 @@ static bool extend_cbuf(const thread *t, char *buf, size_t &buflen)
 
 static enum errorcode errno_to_sockscode()
 {
-    switch(errno) {
+    switch (errno) {
     case ETIMEDOUT:
         return EC_TTL_EXPIRED;
     case EPROTOTYPE:
@@ -579,8 +580,7 @@ static int usage(void) {
 
 /* prevent username and password from showing up in top. */
 static void zero_arg(char *s) {
-	size_t i, l = strlen(s);
-	for(i=0;i<l;i++) s[i] = 0;
+    memset(s, 0, strlen(s));
 }
 
 int main(int argc, char** argv) {
@@ -588,8 +588,8 @@ int main(int argc, char** argv) {
 	int ch;
 	const char *listenip = "0.0.0.0";
 	unsigned port = 1080;
-	while((ch = getopt(argc, argv, ":146b:u:C:U:P:i:p:")) != -1) {
-		switch(ch) {
+	while ((ch = getopt(argc, argv, ":146b:u:C:U:P:i:p:")) != -1) {
+		switch (ch) {
 			case '1':
 				use_auth_ips = true;
 				break;
@@ -629,28 +629,27 @@ int main(int argc, char** argv) {
 				return usage();
 		}
 	}
-	if((auth_user && !auth_pass) || (!auth_user && auth_pass)) {
+	if ((auth_user && !auth_pass) || (!auth_user && auth_pass)) {
 		dprintf(2, "error: user and pass must be used together\n");
 		return 1;
 	}
-	if(use_auth_ips && !auth_pass) {
+	if (use_auth_ips && !auth_pass) {
 		dprintf(2, "error: auth-once option must be used together with user/pass\n");
 		return 1;
 	}
-	if(!allow_ipv6 && !allow_ipv4) {
+	if (!allow_ipv6 && !allow_ipv4) {
 		dprintf(2, "error: -4 and -6 options cannot be used together\n");
 		return 1;
 	}
 	signal(SIGPIPE, SIG_IGN);
 	struct server s;
 	std::vector<std::unique_ptr<thread>> threads;
-	if(server_setup(&s, listenip, port)) {
+	if (server_setup(&s, listenip, port)) {
 		perror("server_setup");
 		return 1;
 	}
 	server = &s;
 
-	// XXX: Modified
 	/* This is tricky -- we *must* use a name that will not be in hosts,
 	 * otherwise, at least with eglibc, the resolve and NSS libraries will not
 	 * be properly loaded.  The '.invalid' label is RFC-guaranteed to never
@@ -672,24 +671,24 @@ int main(int argc, char** argv) {
 	if (g_user_id)
 		nk_set_uidgid(nsocks_uid, nsocks_gid, NULL, 0);
 
-	while(1) {
+	for (;;) {
 		collect(threads);
 		struct client c;
 		auto curr = std::make_unique<thread>();
 		curr->done = false;
-		if(server_waitclient(&s, &c)) {
+		if (server_waitclient(&s, &c)) {
 			continue;
 		}
 		curr->client = c;
 		threads.emplace_back(std::move(curr));
 		auto ct = threads.back().get();
 		pthread_attr_t *a = 0, attr;
-		if(pthread_attr_init(&attr) == 0) {
+		if (pthread_attr_init(&attr) == 0) {
 			a = &attr;
 			pthread_attr_setstacksize(a, THREAD_STACK_SIZE);
 		}
-		if(pthread_create(&ct->pt, a, clientthread, ct) != 0)
+		if (pthread_create(&ct->pt, a, clientthread, ct) != 0)
 			dprintf(2, "pthread_create failed. OOM?\n");
-		if(a) pthread_attr_destroy(&attr);
+		if (a) pthread_attr_destroy(&attr);
 	}
 }
