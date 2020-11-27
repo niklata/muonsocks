@@ -1,8 +1,5 @@
-#ifndef SERVER_H
-#define SERVER_H
-
-#undef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200809L
+#ifndef SOCKUNION_H
+#define SOCKUNION_H
 
 #include <sys/socket.h>
 #include <netdb.h>
@@ -26,23 +23,6 @@ union sockaddr_union {
 #define SOCKADDR_UNION_PORT(PTR) ( \
 	( SOCKADDR_UNION_AF(PTR) == AF_INET  ) ? (PTR)->v4.sin_port  : ( \
 	( SOCKADDR_UNION_AF(PTR) == AF_INET6 ) ? (PTR)->v6.sin6_port : 0 ) )
-
-struct client {
-	union sockaddr_union addr;
-	int fd;
-	int socksver;
-};
-
-struct server {
-	int fd;
-};
-
-int resolve(const char *host, unsigned short port, int fam, struct addrinfo** addr);
-int resolve_sa(const char *host, unsigned short port, union sockaddr_union *res);
-int bindtoip(int fd, union sockaddr_union *bindaddr);
-
-int server_waitclient(struct server *server, struct client* client);
-int server_setup(struct server *server, const char* listenip, unsigned short port);
 
 #endif
 

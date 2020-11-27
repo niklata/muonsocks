@@ -39,8 +39,9 @@
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
+#include <utility>
 #include "scopeguard.hpp"
-#include "server.h"
+#include "sockunion.h"
 extern "C" {
 #include "privs.h"
 }
@@ -64,6 +65,22 @@ extern "C" {
 #endif
 
 #define BUF_SIZE 4096
+
+struct client {
+	union sockaddr_union addr;
+	int fd;
+	int socksver;
+};
+
+struct server {
+	int fd;
+};
+
+struct thread {
+	pthread_t pt;
+	struct client client;
+	std::atomic<bool> done;
+};
 
 static bool allow_ipv4 = true;
 static bool allow_ipv6 = true;
@@ -96,12 +113,6 @@ enum errorcode {
 	EC_ADDRESSTYPE_NOT_SUPPORTED = 8,
 };
 
-struct thread {
-	pthread_t pt;
-	struct client client;
-	std::atomic<bool> done;
-};
-
 #ifndef CONFIG_LOG
 #define CONFIG_LOG 1
 #endif
@@ -114,6 +125,71 @@ struct thread {
 static void dolog(const char* fmt, ...) { }
 #endif
 
+static int resolve(const char *host, unsigned short port, int fam, struct addrinfo** addr) {
+	struct addrinfo hints;
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = fam;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags = AI_PASSIVE;
+	char port_buf[8];
+	snprintf(port_buf, sizeof port_buf, "%u", port);
+	return getaddrinfo(host, port_buf, &hints, addr);
+}
+
+static int resolve_sa(const char *host, unsigned short port, union sockaddr_union *res) {
+	struct addrinfo *ainfo = 0;
+	int ret;
+	SOCKADDR_UNION_AF(res) = AF_UNSPEC;
+	if((ret = resolve(host, port, AF_UNSPEC, &ainfo))) return ret;
+	SCOPE_EXIT { freeaddrinfo(ainfo); };
+	memcpy(res, ainfo->ai_addr, ainfo->ai_addrlen);
+	return 0;
+}
+
+static int bindtoip(int fd, union sockaddr_union *bindaddr) {
+	socklen_t sz = SOCKADDR_UNION_LENGTH(bindaddr);
+	if(sz)
+		return bind(fd, (struct sockaddr*) bindaddr, sz);
+	return 0;
+}
+
+static int server_waitclient(struct server *server, struct client* client) {
+    socklen_t clen = sizeof client->addr;
+    client->fd = accept(server->fd, reinterpret_cast<sockaddr *>(&client->addr), &clen);
+    if (client->fd == -1) return -1;
+    int flags = 1;
+    if (setsockopt(client->fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0) {
+        dprintf(2, "failed to set TCP_NODELAY on client socket\n");
+    }
+    return 0;
+}
+
+static int server_setup(struct server *server, const char* listenip, unsigned short port) {
+	struct addrinfo *ainfo = 0;
+	if(resolve(listenip, port, AF_UNSPEC, &ainfo)) return -1;
+	SCOPE_EXIT { freeaddrinfo(ainfo); };
+	struct addrinfo* p;
+	int listenfd = -1;
+	for(p = ainfo; p; p = p->ai_next) {
+		if((listenfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0)
+			continue;
+		int yes = 1;
+		setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int));
+		if(bind(listenfd, p->ai_addr, p->ai_addrlen) < 0) {
+			close(listenfd);
+			listenfd = -1;
+			continue;
+		}
+		break;
+	}
+	if(listenfd < 0) return -2;
+	if(listen(listenfd, SOMAXCONN) < 0) {
+		close(listenfd);
+		return -3;
+	}
+	server->fd = listenfd;
+	return 0;
+}
 static int is_authed(union sockaddr_union *client, union sockaddr_union *authedip) {
 	int af = SOCKADDR_UNION_AF(authedip);
 	if(af == SOCKADDR_UNION_AF(client)) {

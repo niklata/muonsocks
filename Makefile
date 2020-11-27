@@ -5,17 +5,17 @@ prefix = /usr/local
 bindir = $(prefix)/bin
 
 PROG = microsocks
-SRCS =  sockssrv.cc server.cc privs.c
-OBJS = sockssrv.o server.o privs.o
+SRCS =  main.cc privs.c
+OBJS = main.o privs.o
 #OBJS = $(SRCS:.c=.o)
 
 LIBS = -lpthread
 
 CFLAGS += -std=c99 -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
-CPPFLAGS += -std=gnu++17 -fno-rtti -fno-exceptions -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
+CXXFLAGS += -std=gnu++17 -fno-rtti -fno-exceptions -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
 
 #CFLAGS += -fsanitize=undefined
-#CPPFLAGS += -fsanitize=undefined
+#CXXFLAGS += -fsanitize=undefined
 #LDFLAGS += -fsanitize=undefined
 
 -include config.mak
