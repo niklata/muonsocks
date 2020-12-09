@@ -29,6 +29,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <poll.h>
+#include <fcntl.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <errno.h>
@@ -75,6 +76,8 @@ struct client {
 };
 
 struct server {
+    server(const char *lip) : listenip(lip) {}
+    const char *listenip;
     int fd;
 };
 
@@ -93,7 +96,6 @@ static const char* auth_pass;
 static bool use_auth_ips = false;
 static std::vector<sockaddr_union *> auth_ips;
 static std::shared_mutex auth_ips_mtx;
-static const struct server* server;
 static union sockaddr_union bind_addr;
 
 enum authmethod : char {
@@ -167,9 +169,9 @@ static int server_waitclient(struct server *server, struct client* client) {
     return 0;
 }
 
-static int server_setup(struct server *server, const char* listenip, unsigned short port) {
+static int server_setup(struct server *server, unsigned short port) {
     struct addrinfo *ainfo = nullptr;
-    if (resolve(listenip, port, AF_UNSPEC, &ainfo)) return -1;
+    if (resolve(server->listenip, port, AF_UNSPEC, &ainfo)) return -1;
     SCOPE_EXIT { freeaddrinfo(ainfo); };
     int listenfd = -1;
     for (auto p = ainfo; p; p = p->ai_next) {
@@ -180,6 +182,17 @@ static int server_setup(struct server *server, const char* listenip, unsigned sh
             dprintf(2, "failed to set SO_REUSEADDR on listen socket\n");
         }
         if (bind(listenfd, p->ai_addr, p->ai_addrlen) < 0) {
+            close(listenfd);
+            listenfd = -1;
+            continue;
+        }
+        int flags = fcntl(listenfd, F_GETFL);
+        if (flags < 0) {
+            close(listenfd);
+            listenfd = -1;
+            continue;
+        }
+        if (fcntl(listenfd, F_SETFL, flags | O_NONBLOCK) < 0) {
             close(listenfd);
             listenfd = -1;
             continue;
@@ -585,8 +598,9 @@ static void zero_arg(char *s) {
 
 int main(int argc, char** argv) {
     bind_addr.v4.sin_family = AF_UNSPEC;
+    std::vector<struct server> servers;
+    std::vector<std::unique_ptr<thread>> threads;
     int ch;
-    const char *listenip = "0.0.0.0";
     unsigned port = 1080;
     while ((ch = getopt(argc, argv, ":146b:u:C:U:P:i:p:")) != -1) {
         switch (ch) {
@@ -617,7 +631,7 @@ int main(int argc, char** argv) {
             zero_arg(optarg);
             break;
         case 'i':
-            listenip = optarg;
+            servers.emplace_back(optarg);
             break;
         case 'p':
             port = atoi(optarg);
@@ -629,6 +643,7 @@ int main(int argc, char** argv) {
             return usage();
         }
     }
+    if (servers.empty()) servers.emplace_back("0.0.0.0");
     if ((auth_user && !auth_pass) || (!auth_user && auth_pass)) {
         dprintf(2, "error: user and pass must be used together\n");
         return 1;
@@ -642,13 +657,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     signal(SIGPIPE, SIG_IGN);
-    struct server s;
-    std::vector<std::unique_ptr<thread>> threads;
-    if (server_setup(&s, listenip, port)) {
-        perror("server_setup");
-        return 1;
+
+    for (auto &i: servers) {
+        if (server_setup(&i, port)) {
+            perror("server_setup");
+            return 1;
+        }
     }
-    server = &s;
 
     /* This is tricky -- we *must* use a name that will not be in hosts,
      * otherwise, at least with eglibc, the resolve and NSS libraries will not
@@ -671,23 +686,39 @@ int main(int argc, char** argv) {
     if (g_user_id)
         nk_set_uidgid(nsocks_uid, nsocks_gid, NULL, 0);
 
+    auto fds = std::make_unique<struct pollfd[]>(servers.size());
+    for (size_t i = 0, iend = servers.size(); i < iend; ++i) {
+        fds[i] = { servers[i].fd, POLLIN, 0 };
+    }
+
     for (;;) {
         collect(threads);
-        struct client c;
-        auto curr = std::make_unique<thread>();
-        curr->done = false;
-        if (server_waitclient(&s, &c))
-            continue;
-        curr->client = c;
-        threads.emplace_back(std::move(curr));
-        auto ct = threads.back().get();
-        pthread_attr_t *a = 0, attr;
-        if (pthread_attr_init(&attr) == 0) {
-            a = &attr;
-            pthread_attr_setstacksize(a, THREAD_STACK_SIZE);
+poll_again:
+        switch (poll(fds.get(), servers.size(), -1)) {
+        default: break;
+        case -1: if (errno == EINTR || errno == EAGAIN) continue;
+                 else perror("poll");
+        case 0:  goto poll_again;
         }
-        if (pthread_create(&ct->pt, a, clientthread, ct) != 0)
-            dprintf(2, "pthread_create failed. OOM?\n");
-        if (a) pthread_attr_destroy(&attr);
+        for (size_t i = 0, iend = servers.size(); i < iend; ++i) {
+            if (fds[i].revents & POLLIN) {
+                struct client c;
+                auto curr = std::make_unique<thread>();
+                curr->done = false;
+                if (server_waitclient(&servers[i], &c))
+                    continue;
+                curr->client = c;
+                threads.emplace_back(std::move(curr));
+                auto ct = threads.back().get();
+                pthread_attr_t *a = 0, attr;
+                if (pthread_attr_init(&attr) == 0) {
+                    a = &attr;
+                    pthread_attr_setstacksize(a, THREAD_STACK_SIZE);
+                }
+                if (pthread_create(&ct->pt, a, clientthread, ct) != 0)
+                    dprintf(2, "pthread_create failed. OOM?\n");
+                if (a) pthread_attr_destroy(&attr);
+            }
+        }
     }
 }
