@@ -7,17 +7,20 @@ bindir = $(prefix)/bin
 PROG = microsocks
 SRCS =  main.cc privs.c
 OBJS = main.o privs.o
-#OBJS = $(SRCS:.c=.o)
+DEPS = main.d privs.d
 
 LIBS = -lpthread
 
-CFLAGS += -std=c99 -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
-CXXFLAGS += -std=gnu++17 -fno-rtti -fno-exceptions -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
+CC ?= gcc
+CCX ?= g++
+CFLAGS = -MMD -O2 -s -std=c99 -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
+CXXFLAGS = -MMD -O2 -s -std=gnu++17 -fno-rtti -fno-exceptions -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
 
 #CFLAGS += -fsanitize=undefined
 #CXXFLAGS += -fsanitize=undefined
 #LDFLAGS += -fsanitize=undefined
 
+-include $(DEPS)
 -include config.mak
 
 all: $(PROG)
@@ -27,11 +30,13 @@ install: $(PROG)
 	install -D -m 755 $(PROG) $(DESTDIR)/$(bindir)/$(PROG)
 
 clean:
-	rm -f $(PROG)
-	rm -f $(OBJS)
+	rm -f $(PROG) $(OBJS) $(DEPS)
 
 %.o: %.c
-	$(CC) $(CFLAGS) $(INC) $(PIC) -c -o $@ $<
+	$(CC) $(CFLAGS) $(INC) -c -o $@ $^
+
+%.o: %.cc
+	$(CCX) $(CXXFLAGS) $(INC) -c -o $@ $^
 
 $(PROG): $(OBJS)
 	$(CXX) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
