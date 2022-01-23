@@ -2,6 +2,7 @@
    MicroSocks - multithreaded, small, efficient SOCKS5 server.
 
    Copyright (C) 2017 rofl0r.
+   Copyright 2020-2022 Nicholas J. Kain
 
    This is the successor of "rocksocks5", and it was written with
    different goals in mind:
