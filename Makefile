@@ -11,19 +11,22 @@ DEPS = main.d privs.d
 
 LIBS = -lpthread
 
-CC ?= gcc
-CCX ?= g++
 CFLAGS = -MMD -O2 -s -std=c99 -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
 CXXFLAGS = -MMD -O2 -s -std=gnu++17 -fno-rtti -fno-exceptions -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
+CPPFLAGS += $(INC)
 
 #CFLAGS += -fsanitize=undefined
 #CXXFLAGS += -fsanitize=undefined
 #LDFLAGS += -fsanitize=undefined
 
--include $(DEPS)
 -include config.mak
 
 all: $(PROG)
+
+$(PROG): $(OBJS)
+	$(CXX) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
+
+-include $(DEPS)
 
 install: $(PROG)
 	install -d $(DESTDIR)/$(bindir)
@@ -31,15 +34,6 @@ install: $(PROG)
 
 clean:
 	rm -f $(PROG) $(OBJS) $(DEPS)
-
-%.o: %.c
-	$(CC) $(CFLAGS) $(INC) -c -o $@ $^
-
-%.o: %.cc
-	$(CCX) $(CXXFLAGS) $(INC) -c -o $@ $^
-
-$(PROG): $(OBJS)
-	$(CXX) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
 
 .PHONY: all clean install
 
