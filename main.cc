@@ -1,8 +1,10 @@
 /*
-   MicroSocks - multithreaded, small, efficient SOCKS5 server.
+   muonsocks - multithreaded, small, efficient SOCKS5 server.
 
    Copyright (C) 2017 rofl0r.
    Copyright 2020-2022 Nicholas J. Kain
+
+   This program is derived from rofl0r's excellent microsocks:
 
    This is the successor of "rocksocks5", and it was written with
    different goals in mind:
@@ -597,9 +599,9 @@ threads.erase(std::remove_if(threads.begin(), threads.end(),
 
 static int usage(void) {
     dprintf(2,
-            "MicroSocks SOCKS5 Server\n"
+            "muonsocks SOCKS5 Server\n"
             "------------------------\n"
-            "usage: microsocks -1 -i listenip -p port -u user -P password -b bindaddr\n"
+            "usage: muonsocks -1 -i listenip -p port -u user -P password -b bindaddr\n"
             "all arguments are optional.\n"
             "by default listenip is 0.0.0.0 and port 1080.\n\n"
             "option -b specifies which ip outgoing connections are bound to\n"

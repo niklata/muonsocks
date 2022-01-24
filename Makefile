@@ -4,7 +4,7 @@
 prefix = /usr/local
 bindir = $(prefix)/bin
 
-PROG = microsocks
+PROG = muonsocks
 C_SRCS =  $(sort $(wildcard *.c) $(wildcard nk/*.c))
 CXX_SRCS =  $(sort $(wildcard *.cc))
 OBJS = $(C_SRCS:.c=.o) $(CXX_SRCS:.cc=.o)

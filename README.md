@@ -1,3 +1,57 @@
+# muonsocks
+
+## Introduction
+
+This is an enhancement of rofl0r's excellent
+[microsocks](https://github.com/rofl0r/microsocks) program with the following
+changes:
+
+* Support SOCKS4a clients
+* Support disabling outgoing ipv4 or ipv6
+* Support changing uid and chroot
+* Support binding to multiple ip/port tuples
+* Rewritten SOCKS5 parser that tolerates inputs split across multiple recv()
+* More performance from larger buffers and fewer poll invocations
+* Use TCP_NODELAY to lower latency impact
+* Enhanced error handling
+* Correct some minor bugs (signal handling and memory leaks)
+
+It is compiled as C++ rather than C essentially for destructors and the RAII
+idiom.  Exceptions or RTTI are not used, so bloat is minimal.
+
+muonsocks obsoletes nsocks; it is strictly superior aside from having no
+support for UDP over SOCKS which is virtually never used in practice.
+
+## Requirements
+
+* Linux or BSD system
+* GCC or Clang
+* GNU Make
+
+## Standard Usage
+
+Compile and install muonsocks.
+* Build muonsocks: `make`
+* Install the `muonsocks` executable in a normal place.  I suggest
+  `/usr/local/bin`.
+
+Set up the user account and chroot directory for muonsocks.  Example:
+```
+$ su -
+# umask 077
+# groupadd muonsocks
+# useradd -d /var/empty -s /sbin/nologin -g muonsocks muonsocks
+```
+
+Then the program can be run similarly to:
+
+`muonsocks -u muonsocks -C /var/empty -4 -b 192.168.0.1 -b 10.0.0.1 -p 1080`
+
+Which would run a SOCKS5 server bound to 192.168.0.1:1080 and 10.0.0.1:1080
+that would only sent outgoing IPv4 requests.
+
+## Original microsocks README below
+
 MicroSocks - multithreaded, small, efficient SOCKS5 server.
 ===========================================================
 
@@ -41,7 +95,7 @@ libc is not even 50 KB. that's easily usable even on the cheapest routers.
 command line options
 ------------------------
 
-    microsocks -1 -i listenip -p port -u user -P password -b bindaddr
+    muonsocks -1 -i listenip -p port -u user -P password -b bindaddr
 
 all arguments are optional.
 by default listenip is 0.0.0.0 and port 1080.
@@ -52,3 +106,4 @@ and may use the proxy without auth.
 this is handy for programs like firefox that don't support
 user/pass auth. for it to work you'd basically make one connection
 with another program that supports it, and then you can use firefox too.
+
