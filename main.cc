@@ -130,6 +130,22 @@ enum errorcode {
 static void dolog(const char* fmt, ...) { }
 #endif
 
+static int family_choose(struct addrinfo *remote, union sockaddr_union *bind_addr) {
+    int family = SOCKADDR_UNION_AF(bind_addr);
+    return family == AF_UNSPEC ? remote->ai_family : family;
+}
+
+static struct addrinfo* addr_choose(struct addrinfo *list, union sockaddr_union *bind_addr) {
+    int family = SOCKADDR_UNION_AF(bind_addr);
+    if (family == AF_UNSPEC) return list;
+    struct addrinfo *p;
+    for (p = list; p; p = p->ai_next) {
+        if (p->ai_family == family) return p;
+    }
+    dprintf(2, "warning: address family mismatch\n");
+    return list;
+}
+
 static int resolve(const char *host, unsigned short port, int fam, struct addrinfo** addr) {
     struct addrinfo hints;
     memset(&hints, 0, sizeof hints);
@@ -531,7 +547,8 @@ static void* clientthread(void *data) {
         send_error(t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
         return nullptr;
     }
-    int fd = socket(remote->ai_addr->sa_family, SOCK_STREAM, 0);
+    int family = family_choose(remote, &bind_addr);
+    int fd = socket(family, SOCK_STREAM, 0);
     if (fd == -1) {
         send_error(t->client, t->client.fd, errno_to_sockscode());
         return nullptr;
@@ -545,7 +562,8 @@ static void* clientthread(void *data) {
         send_error(t->client, t->client.fd, errno_to_sockscode());
         return nullptr;
     }
-    if (connect(fd, remote->ai_addr, remote->ai_addrlen) == -1) {
+    struct addrinfo *addr = addr_choose(remote, &bind_addr);
+    if (connect(fd, addr->ai_addr, addr->ai_addrlen) == -1) {
         send_error(t->client, t->client.fd, errno_to_sockscode());
         return nullptr;
     }
