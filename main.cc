@@ -43,10 +43,10 @@
 #include <shared_mutex>
 #include <charconv>
 #include <utility>
-#include "scopeguard.hpp"
+#include "nk/scopeguard.hpp"
 #include "sockunion.h"
 extern "C" {
-#include "privs.h"
+#include "nk/privs.h"
 }
 
 #ifndef MAX

@@ -5,9 +5,10 @@ prefix = /usr/local
 bindir = $(prefix)/bin
 
 PROG = microsocks
-SRCS =  main.cc privs.c
-OBJS = main.o privs.o
-DEPS = main.d privs.d
+C_SRCS =  $(sort $(wildcard *.c) $(wildcard nk/*.c))
+CXX_SRCS =  $(sort $(wildcard *.cc))
+OBJS = $(C_SRCS:.c=.o) $(CXX_SRCS:.cc=.o)
+DEPS = $(C_SRCS:.c=.d) $(CXX_SRCS:.cc=.d)
 
 LIBS = -lpthread
 
