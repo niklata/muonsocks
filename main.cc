@@ -174,6 +174,15 @@ static int resolve_sa(const char *host, unsigned short port, union sockaddr_unio
 static int bindtoip(int fd, union sockaddr_union *bindaddr) {
     socklen_t sz = SOCKADDR_UNION_LENGTH(bindaddr);
     if (!sz) return 0;
+#ifdef __linux__
+    const auto bindport = !!SOCKADDR_UNION_PORT(bindaddr);
+    int level = bindport ? SOL_SOCKET : IPPROTO_IP;
+    int optname = bindport ? SO_REUSEADDR : IP_BIND_ADDRESS_NO_PORT;
+    int flags = 1;
+    if (setsockopt(fd, level, optname, &flags, sizeof flags) < 0) {
+        dprintf(2, "failed to set %s on client socket\n", bindport ? "SO_REUSEADDR" : "IP_BIND_ADDRESS_NO_PORT");
+    }
+#endif
     return bind(fd, (struct sockaddr*) bindaddr, sz);
 }
 
