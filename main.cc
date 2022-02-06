@@ -320,7 +320,7 @@ static int send_error(const client &c, int fd, enum errorcode ec) {
     }
 }
 
-static void copyloop(const client &c, int fd1, int fd2, char *buf) {
+static void copyloop(const client &, int fd1, int fd2, char *buf) {
     struct pollfd fds[2] = {
         { fd1, POLLIN, 0},
         { fd2, POLLIN, 0},
@@ -331,14 +331,12 @@ static void copyloop(const client &c, int fd1, int fd2, char *buf) {
            usually programs send keep-alive packets so this should only happen
            when a connection is really unused. */
         switch (poll(fds, 2, 60*15*1000)) {
-        default: break;
-        case 0:
-                 send_error(c, fd1, EC_TTL_EXPIRED);
-                 return;
         case -1:
                  if (errno == EINTR || errno == EAGAIN) continue;
                  else perror("poll");
+        case 0:
                  return;
+        default: break;
         }
         int infd = (fds[0].revents & POLLIN) ? fd1 : fd2;
         int outfd = infd == fd2 ? fd1 : fd2;
