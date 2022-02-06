@@ -320,7 +320,7 @@ static int send_error(const client &c, int fd, enum errorcode ec) {
     }
 }
 
-static void copyloop(const client &, int fd1, int fd2, char *buf) {
+static void copyloop(int fd1, int fd2, char *buf) {
     struct pollfd fds[2] = {
         { fd1, POLLIN, 0},
         { fd2, POLLIN, 0},
@@ -626,7 +626,7 @@ static void* clientthread(void *data) {
     }
     if (send_error(t->client, t->client.fd, EC_SUCCESS) < 0) return nullptr;
     RESET_BUF();
-    copyloop(t->client, t->client.fd, fd, buf);
+    copyloop(t->client.fd, fd, buf);
     return nullptr;
 }
 
