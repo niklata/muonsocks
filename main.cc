@@ -263,23 +263,60 @@ static void add_auth_ip(union sockaddr_union *caddr) {
 
 static int send_auth_response(int fd, char version, enum authmethod method) {
     char buf[2] = { version, method };
-    ssize_t r = write(fd, buf, sizeof buf);
-    return r == sizeof buf ? r : -1;
+    for (;;) {
+        ssize_t r = write(fd, buf, sizeof buf);
+        if (r == -1 && errno == EINTR) continue;
+        return r == sizeof buf ? r : -1;
+    }
 }
 
 static int send_error(const client &c, int fd, enum errorcode ec) {
+    struct sockaddr_storage srcaddr = {};
+    srcaddr.ss_family = AF_INET; // for non-EC_SUCCESS case
+    if (ec == EC_SUCCESS) {
+        socklen_t srcaddrlen = sizeof srcaddr;
+        if (getsockname(fd, reinterpret_cast<struct sockaddr *>(&srcaddr), &srcaddrlen) == -1) return -1;
+    }
+    char b[24];
+    size_t blen;
     if (c.socksver == 5) {
-        /* position 4 contains ATYP, the address type, which is the same as used in the connect
-           request. we're lazy and return always IPV4 address type in errors. */
-        char buf[10] = { 5, ec, 0, 1 /*AT_IPV4*/, 0,0,0,0, 0,0 };
-        ssize_t r = write(fd, buf, sizeof buf);
-        return r == sizeof buf ? r : -1;
+        b[0] = 5;
+        b[1] = ec;
+        b[2] = 0;
+        if (srcaddr.ss_family == AF_INET) {
+            b[3] = 1;
+            const auto sa = reinterpret_cast<sockaddr_in *>(&srcaddr);
+            memcpy(b + 4, &sa->sin_addr, 4);
+            memcpy(b + 8, &sa->sin_port, 2);
+            blen = 10;
+        } else {
+            b[3] = 4;
+            const auto sa = reinterpret_cast<sockaddr_in6 *>(&srcaddr);
+            memcpy(b + 4, &sa->sin6_addr, 16);
+            memcpy(b + 20, &sa->sin6_port, 2);
+            blen = 22;
+        }
     } else if (c.socksver == 4) {
-        char buf[8] = { 0, ec == 0 ? char(0x5a) : char(0x5b), 0,0, 0,0,0,0 };
-        ssize_t r = write(fd, buf, sizeof buf);
-        return r == sizeof buf ? r : -1;
+        if (srcaddr.ss_family != AF_INET) {
+            // We could return -1 here, except it would break connections in
+            // the case that the client requested a destination by DNS address
+            // and the SOCKS proxy connected to that host via IPv6.  So, the
+            // lesser evil is to just lie and report a zero IP.
+            memset(&srcaddr, 0, sizeof srcaddr);
+        }
+        const auto sa = reinterpret_cast<sockaddr_in *>(&srcaddr);
+        b[0] = 0;
+        b[1] = ec == EC_SUCCESS ? char(0x5a) : char(0x5b);
+        memcpy(b + 2, &sa->sin_port, 2);
+        memcpy(b + 4, &sa->sin_addr, 4);
+        blen = 8;
     } else {
         return -1;
+    }
+    for (;;) {
+        ssize_t r = write(fd, b, blen);
+        if (r == -1 && errno == EINTR) continue;
+        return r == (ssize_t)blen ? r : -1;
     }
 }
 
