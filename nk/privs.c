@@ -1,31 +1,5 @@
-/* privs.c - uid/gid, chroot, and capability handling
- *
- * Copyright 2005-2018 Nicholas J. Kain <njkain at gmail dot com>
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * - Redistributions of source code must retain the above copyright notice,
- *   this list of conditions and the following disclaimer.
- *
- * - Redistributions in binary form must reproduce the above copyright notice,
- *   this list of conditions and the following disclaimer in the documentation
- *   and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- */
-
+// Copyright 2005-2018 Nicholas J. Kain <njkain at gmail dot com>
+// SPDX-License-Identifier: MIT
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -43,8 +17,8 @@
 #include <sys/capability.h>
 #include <sys/prctl.h>
 #endif
-#include "privs.h"
-#include "log.h"
+#include "nk/privs.h"
+#include "nk/log.h"
 
 void nk_set_chroot(const char *chroot_dir)
 {
@@ -56,7 +30,7 @@ void nk_set_chroot(const char *chroot_dir)
 }
 
 #ifdef NK_USE_CAPABILITY
-static size_t nk_get_capability_vinfo(uint32_t version[static 1])
+static size_t nk_get_capability_vinfo(uint32_t *version)
 {
     struct __user_cap_header_struct hdr;
     memset(&hdr, 0, sizeof hdr);
@@ -80,7 +54,7 @@ static size_t nk_get_capability_vinfo(uint32_t version[static 1])
 }
 static size_t nk_set_capability_prologue(const unsigned char *caps,
                                          size_t caplen,
-                                         uint32_t cversion[static 1])
+                                         uint32_t *cversion)
 {
     if (!caps || !caplen)
         return 0;
@@ -120,7 +94,7 @@ static void nk_set_capability_epilogue(const unsigned char *caps,
 #else
 static size_t nk_set_capability_prologue(const unsigned char *caps,
                                          size_t caplen,
-                                         uint32_t cversion[static 1])
+                                         uint32_t *cversion)
 { (void)caps; (void)caplen; (void)cversion; return 0; }
 static void nk_set_capability_epilogue(const unsigned char *caps,
                                        size_t caplen, uint32_t cversion,

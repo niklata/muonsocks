@@ -4,6 +4,8 @@
    Copyright (C) 2017 rofl0r.
    Copyright 2020-2022 Nicholas J. Kain
 
+   SPDX-License-Identifier: MIT
+
    This program is derived from rofl0r's excellent microsocks:
 
    This is the successor of "rocksocks5", and it was written with
