@@ -51,6 +51,7 @@
 #include "sockunion.h"
 extern "C" {
 #include "nk/privs.h"
+#include "nk/io.h"
 }
 
 #ifndef MAX
@@ -92,12 +93,14 @@ struct thread {
     std::atomic<bool> done;
 };
 
-static bool allow_ipv4 = true;
-static bool allow_ipv6 = true;
 static const char* g_user_id;
 static const char* g_chroot;
 static const char* auth_user;
 static const char* auth_pass;
+static int s6_notify_fd = 3;
+static bool allow_ipv4 = true;
+static bool allow_ipv6 = true;
+static bool s6_notify_enable = false;
 static bool use_auth_ips = false;
 static std::vector<sockaddr_union *> auth_ips;
 static std::shared_mutex auth_ips_mtx;
@@ -672,7 +675,7 @@ int main(int argc, char** argv) {
     std::vector<std::unique_ptr<thread>> threads;
     int ch;
     unsigned port = 1080;
-    while ((ch = getopt(argc, argv, ":146b:u:C:U:P:i:p:")) != -1) {
+    while ((ch = getopt(argc, argv, ":146b:u:C:U:P:i:p:d:")) != -1) {
         switch (ch) {
         case '1':
             use_auth_ips = true;
@@ -705,6 +708,10 @@ int main(int argc, char** argv) {
             break;
         case 'p':
             port = atoi(optarg);
+            break;
+        case 'd':
+            s6_notify_fd = atoi(optarg);
+            s6_notify_enable = true;
             break;
         case ':':
             dprintf(2, "error: option -%c requires an operand\n", optopt);
@@ -761,6 +768,11 @@ int main(int argc, char** argv) {
         fds[i] = { servers[i].fd, POLLIN, 0 };
     }
 
+    if (s6_notify_enable) {
+        char buf[] = "\n";
+        safe_write(s6_notify_fd, buf, 1);
+        close(s6_notify_fd);
+    }
     for (;;) {
         collect(threads);
 poll_again:
