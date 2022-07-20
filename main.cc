@@ -751,10 +751,10 @@ int main(int argc, char** argv) {
      */
     (void) gethostbyname("fail.invalid");
 
-    uid_t nsocks_uid;
-    gid_t nsocks_gid;
+    uid_t muonsocks_uid;
+    gid_t muonsocks_gid;
     if (g_user_id) {
-        if (nk_uidgidbyname(g_user_id, &nsocks_uid, &nsocks_gid)) {
+        if (nk_uidgidbyname(g_user_id, &muonsocks_uid, &muonsocks_gid)) {
             dprintf(2, "invalid user '%s' specified\n", g_user_id);
             return 1;
         }
@@ -762,7 +762,7 @@ int main(int argc, char** argv) {
     if (g_chroot)
         nk_set_chroot(g_chroot);
     if (g_user_id)
-        nk_set_uidgid(nsocks_uid, nsocks_gid, NULL, 0);
+        nk_set_uidgid(muonsocks_uid, muonsocks_gid, NULL, 0);
 
     auto fds = std::make_unique<struct pollfd[]>(servers.size());
     for (size_t i = 0, iend = servers.size(); i < iend; ++i) {
