@@ -72,8 +72,9 @@ extern "C" {
 #define THREAD_STACK_SIZE 32*1024
 #endif
 
-#define BUF_SIZE 4096
-#define MAX_BATCH 32
+// BUF_SIZE is set to a multiple of a typical 1500 MTU
+#define BUF_SIZE 4500
+#define MAX_BATCH 29
 
 struct client {
     union sockaddr_union addr;
