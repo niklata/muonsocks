@@ -54,6 +54,13 @@ I suggest running muonsocks from a process supervisor such as
 [s6](http://www.skarnet.org/software/s6).  This will allow for reliable
 functioning in the case of unforseen or unrecoverable errors.
 
+## Downloads
+
+* [GitLab](https://gitlab.com/niklata/muonsocks)
+* [Codeberg](https://codeberg.org/niklata/muonsocks)
+* [BitBucket](https://bitbucket.com/niklata/muonsocks)
+* [GitHub](https://github.com/niklata/muonsocks)
+
 ## Original microsocks README below
 
 MicroSocks - multithreaded, small, efficient SOCKS5 server.
