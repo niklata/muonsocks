@@ -194,7 +194,11 @@ static int bindtoip(int fd, union sockaddr_union *bindaddr) {
 
 static int server_waitclient(struct server *server, struct client* client) {
     socklen_t clen = sizeof client->addr;
+#ifndef __linux__
     client->fd = accept(server->fd, reinterpret_cast<sockaddr *>(&client->addr), &clen);
+#else
+    client->fd = accept4(server->fd, reinterpret_cast<sockaddr *>(&client->addr), &clen, SOCK_CLOEXEC);
+#endif
     if (client->fd == -1) {
         usleep(1000); // Prevent busy-spin when fd limit is reached
         return -1;
@@ -212,7 +216,7 @@ static int server_setup(struct server *server, unsigned short port) {
     SCOPE_EXIT { freeaddrinfo(ainfo); };
     int listenfd = -1;
     for (auto p = ainfo; p; p = p->ai_next) {
-        if ((listenfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0)
+        if ((listenfd = socket(p->ai_family, p->ai_socktype|SOCK_CLOEXEC, p->ai_protocol)) < 0)
             continue;
         int yes = 1;
         if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes) < 0) {
@@ -603,7 +607,7 @@ static void* clientthread(void *data) {
         return nullptr;
     }
     int family = family_choose(remote, &bind_addr);
-    int fd = socket(family, SOCK_STREAM, 0);
+    int fd = socket(family, SOCK_STREAM|SOCK_CLOEXEC, 0);
     if (fd == -1) {
         send_error(t->client, t->client.fd, errno_to_sockscode());
         return nullptr;
