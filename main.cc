@@ -190,7 +190,7 @@ static int bindtoip(int fd, union sockaddr_union *bindaddr) {
         dprintf(2, "failed to set %s on client socket\n", bindport ? "SO_REUSEADDR" : "IP_BIND_ADDRESS_NO_PORT");
     }
 #endif
-    return bind(fd, (struct sockaddr*) bindaddr, sz);
+    return bind(fd, reinterpret_cast<const sockaddr *>(bindaddr), sz);
 }
 
 static int server_waitclient(struct server *server, struct client* client) {
@@ -327,7 +327,7 @@ static int send_error(const client &c, int fd, enum errorcode ec) {
     for (;;) {
         ssize_t r = write(fd, b, blen);
         if (r == -1 && errno == EINTR) continue;
-        return r == (ssize_t)blen ? r : -1;
+        return r == static_cast<ssize_t>(blen) ? r : -1;
     }
 }
 
