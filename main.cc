@@ -73,7 +73,8 @@ extern "C" {
 #endif
 
 // BUF_SIZE is set to a multiple of a typical 1500 MTU
-#define BUF_SIZE 4500
+// minus options-free IPv6 (40) and TCP (20) headers
+#define BUF_SIZE 4320
 #define MAX_BATCH 29
 
 struct client {
