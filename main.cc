@@ -51,7 +51,6 @@
 #include "sockunion.h"
 extern "C" {
 #include "nk/privs.h"
-#include "nk/io.h"
 }
 
 #ifndef MAX
@@ -775,8 +774,16 @@ int main(int argc, char** argv) {
     }
 
     if (s6_notify_enable) {
-        char buf[] = "\n";
-        safe_write(s6_notify_fd, buf, 1);
+        char buf = '\n';
+        for (;;) {
+            auto r = write(s6_notify_fd, &buf, 1);
+            if (r < 1) {
+                if (r == -1 && errno == EINTR) continue;
+                dprintf(2, "s6_notify: write failed: %s", strerror(errno));
+                exit(EXIT_FAILURE);
+            }
+            break;
+        }
         close(s6_notify_fd);
     }
     for (;;) {
