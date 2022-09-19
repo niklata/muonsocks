@@ -13,7 +13,7 @@ DEPS = $(C_SRCS:.c=.d) $(CXX_SRCS:.cc=.d)
 LIBS = -lpthread
 
 CFLAGS = -MMD -O2 -s -std=c99 -I. -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -Wstrict-overflow=5 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
-CXXFLAGS = -MMD -O2 -s -std=gnu++17 -fno-rtti -fno-exceptions -I. -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -Wstrict-overflow=5 -Wold-style-cast -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
+CXXFLAGS = -MMD -O2 -s -std=gnu++20 -fno-rtti -fno-exceptions -I. -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -Wstrict-overflow=5 -Wold-style-cast -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
 CPPFLAGS += $(INC)
 
 #CFLAGS += -fsanitize=undefined
