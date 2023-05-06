@@ -96,8 +96,8 @@ struct thread {
 
 static const char* g_user_id;
 static const char* g_chroot;
-static const char* auth_user;
-static const char* auth_pass;
+static const char* g_auth_user;
+static const char* g_auth_pass;
 static int s6_notify_fd = 3;
 static bool allow_ipv4 = true;
 static bool allow_ipv6 = true;
@@ -438,7 +438,7 @@ static void* clientthread(void *data) {
         while (buflen < 2 + n_methods) { EXTEND_BUF(); }
         for (size_t i = 0; i < n_methods; ++i) {
             if (buf[2 + i] == AM_NO_AUTH) {
-                if (!auth_user) {
+                if (!g_auth_user) {
                     am = AM_NO_AUTH;
                     break;
                 } else if (use_auth_ips) {
@@ -453,7 +453,7 @@ static void* clientthread(void *data) {
                     }
                 }
             } else if (buf[2 + i] == AM_USERNAME) {
-                if (auth_user) {
+                if (g_auth_user) {
                     am = AM_USERNAME;
                     break;
                 }
@@ -476,7 +476,7 @@ static void* clientthread(void *data) {
             memcpy(pass, buf + 2 + ulen + 1, plen);
             user[ulen] = 0;
             pass[plen] = 0;
-            bool allow = !strcmp(user, auth_user) && !strcmp(pass, auth_pass);
+            bool allow = !strcmp(user, g_auth_user) && !strcmp(pass, g_auth_pass);
             if (!allow) return nullptr;
             if (use_auth_ips) {
                 std::unique_lock mtx(auth_ips_mtx);
@@ -532,7 +532,7 @@ static void* clientthread(void *data) {
         if (!allow_ipv4) fam = AF_INET6;
         if (!allow_ipv6) fam = AF_INET;
     } else if (t->client.socksver == 4) {
-        if (auth_pass) {
+        if (g_auth_pass) {
             send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
             return nullptr;
         }
@@ -695,17 +695,21 @@ int main(int argc, char** argv) {
             resolve_sa(optarg, 0, &bind_addr);
             break;
         case 'u':
+            if (g_user_id) free(reinterpret_cast<void *>(const_cast<char *>(g_user_id)));
             g_user_id = strdup(optarg);
             break;
         case 'C':
+            if (g_chroot) free(reinterpret_cast<void *>(const_cast<char *>(g_chroot)));
             g_chroot = strdup(optarg);
             break;
         case 'U':
-            auth_user = strdup(optarg);
+            if (g_auth_user) free(reinterpret_cast<void *>(const_cast<char *>(g_auth_user)));
+            g_auth_user = strdup(optarg);
             zero_arg(optarg);
             break;
         case 'P':
-            auth_pass = strdup(optarg);
+            if (g_auth_pass) free(reinterpret_cast<void *>(const_cast<char *>(g_auth_pass)));
+            g_auth_pass = strdup(optarg);
             zero_arg(optarg);
             break;
         case 'i':
@@ -726,11 +730,11 @@ int main(int argc, char** argv) {
         }
     }
     if (servers.empty()) servers.emplace_back("0.0.0.0");
-    if ((auth_user && !auth_pass) || (!auth_user && auth_pass)) {
+    if ((g_auth_user && !g_auth_pass) || (!g_auth_user && g_auth_pass)) {
         dprintf(2, "error: user and pass must be used together\n");
         return 1;
     }
-    if (use_auth_ips && !auth_pass) {
+    if (use_auth_ips && !g_auth_pass) {
         dprintf(2, "error: auth-once option must be used together with user/pass\n");
         return 1;
     }
