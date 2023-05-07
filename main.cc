@@ -467,6 +467,7 @@ static bool is_banned(int family, const struct addrinfo *remote)
                 assert(m < 8);
                 unsigned char c = 0xffu << (8 - m);
                 *p &= c;
+                *q &= c;
                 if (*p != *q) return false;
             }
             return true;
