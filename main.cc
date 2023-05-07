@@ -144,7 +144,7 @@ enum errorcode {
    which writes directly to an fd. */
 #define dolog(...) dprintf(2, __VA_ARGS__)
 #else
-static void dolog(const char* fmt, ...) { }
+static void dolog(const char *, ...) { }
 #endif
 
 static int family_choose(struct addrinfo *remote, union sockaddr_union *bind_addr) {
