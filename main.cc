@@ -339,11 +339,20 @@ static int send_error(const client &c, int fd, enum errorcode ec) {
     }
 }
 
-static void copyloop(int fd1, int fd2, char *buf) {
+static void log_dc(int clientfd, char *clientname, char *namebuf, unsigned short port, size_t bsent, size_t brecv)
+{
+    if (CONFIG_LOG) {
+        dolog("client[%d] %s: disconnect from %s:%d sent:%zu recv:%zu\n", clientfd, clientname, namebuf, port, bsent, brecv);
+    }
+}
+
+static void copyloop(int fd1, int fd2, char *buf, char *clientname, char *namebuf, unsigned short port) {
     struct pollfd fds[2] = {
         { fd1, POLLIN, 0},
         { fd2, POLLIN, 0},
     };
+
+    size_t bsent = 0, brecv = 0;
 
     for (;;) {
         /* inactive connections are reaped after 15 min to free resources.
@@ -353,7 +362,9 @@ static void copyloop(int fd1, int fd2, char *buf) {
         case -1:
                  if (errno == EINTR || errno == EAGAIN) continue;
                  else perror("poll");
+                 [[fallthrough]];
         case 0:
+                 log_dc(fd1, clientname, namebuf, port, bsent, brecv);
                  return;
         default: break;
         }
@@ -365,18 +376,27 @@ read_retry:
         sent = 0;
         if (--cycles <= 0) continue; // Don't let one channel monopolize.
         n = recv(infd, buf, BUF_SIZE, MSG_DONTWAIT);
-        if (n == 0) return;
+        if (n == 0) {
+            log_dc(fd1, clientname, namebuf, port, bsent, brecv);
+            return;
+        }
         if (n < 0) {
             switch (errno) {
             case EINTR: goto read_retry;
             case EAGAIN: continue;
-            default: return;
+            default: {
+                log_dc(fd1, clientname, namebuf, port, bsent, brecv);
+                return;
+            }
             }
         }
+        if (infd == fd1) bsent += n;
+        else brecv += n;
         while (sent < n) {
             ssize_t m = write(outfd, buf+sent, n-sent);
             if (m < 0) {
                 if (errno == EINTR) continue;
+                log_dc(fd1, clientname, namebuf, port, bsent, brecv);
                 return;
             }
             sent += m;
@@ -459,6 +479,7 @@ static void* clientthread(void *data) {
     auto t = static_cast<thread *>(data);
     char buf[BUF_SIZE];
     char namebuf[256];
+    char clientname[256] = { 0 };
     size_t buflen = 0;
     enum authmethod am = AM_INVALID;
     int fam = AF_UNSPEC;
@@ -671,7 +692,6 @@ static void* clientthread(void *data) {
     }
 
     if (CONFIG_LOG) {
-        char clientname[256];
         int af = SOCKADDR_UNION_AF(&t->client.addr);
         void *ipdata = SOCKADDR_UNION_ADDRESS(&t->client.addr);
         inet_ntop(af, ipdata, clientname, sizeof clientname);
@@ -679,7 +699,7 @@ static void* clientthread(void *data) {
     }
     if (send_error(t->client, t->client.fd, EC_SUCCESS) < 0) return nullptr;
     RESET_BUF();
-    copyloop(t->client.fd, fd, buf);
+    copyloop(t->client.fd, fd, buf, clientname, namebuf, port);
     return nullptr;
 }
 
