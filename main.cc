@@ -39,6 +39,7 @@
 #include <netinet/tcp.h>
 #include <errno.h>
 #include <limits.h>
+#include <cassert>
 #include <memory>
 #include <vector>
 #include <algorithm>
@@ -94,6 +95,13 @@ struct thread {
     std::atomic<bool> done;
 };
 
+struct bandst {
+    int fam;
+    struct in_addr addr4;
+    struct in6_addr addr6;
+    uint32_t mask;
+};
+
 static const char* g_user_id;
 static const char* g_chroot;
 static const char* g_auth_user;
@@ -104,6 +112,7 @@ static bool allow_ipv6 = true;
 static bool s6_notify_enable = false;
 static bool use_auth_ips = false;
 static std::vector<sockaddr_union *> auth_ips;
+static std::vector<bandst> ban_dest;
 static std::shared_mutex auth_ips_mtx;
 static union sockaddr_union bind_addr;
 
@@ -416,6 +425,36 @@ static enum errorcode errno_to_sockscode()
     }
 }
 
+static bool is_banned(int family, const struct addrinfo *remote)
+{
+    for (auto &i: ban_dest) {
+        if (i.fam == family) {
+            unsigned char abuf[16], bbuf[16];
+            size_t addrsize = family == AF_INET ? 4 : 16;
+            auto ai4 = reinterpret_cast<sockaddr_in *>(remote->ai_addr);
+            auto ai6 = reinterpret_cast<sockaddr_in6 *>(remote->ai_addr);
+            memcpy(abuf, family == AF_INET ? reinterpret_cast<const void *>(&ai4->sin_addr) : reinterpret_cast<const void *>(&ai6->sin6_addr),
+                         addrsize);
+            memcpy(bbuf, family == AF_INET ? reinterpret_cast<const void *>(&i.addr4) : reinterpret_cast<const void *>(&i.addr6), addrsize);
+            unsigned char *p = abuf, *q = bbuf;
+            uint32_t m = i.mask;
+            if (family == AF_INET6 && m > 128) m = 128;
+            if (family == AF_INET && m > 32) m = 32;
+            for (;m >= 8; ++p, ++q, m -= 8) {
+                if (*p != *q) return false;
+            }
+            if (m > 0) {
+                assert(m < 8);
+                unsigned char c = 0xffu << (8 - m);
+                *p &= c;
+                if (*p != *q) return false;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 static void* clientthread(void *data) {
     auto t = static_cast<thread *>(data);
     char buf[BUF_SIZE];
@@ -607,6 +646,10 @@ static void* clientthread(void *data) {
         return nullptr;
     }
     int family = family_choose(remote, &bind_addr);
+    if (is_banned(family, remote)) {
+        send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
+        return nullptr;
+    }
     int fd = socket(family, SOCK_STREAM|SOCK_CLOEXEC, 0);
     if (fd == -1) {
         send_error(t->client, t->client.fd, errno_to_sockscode());
@@ -674,12 +717,25 @@ static void zero_arg(char *s) {
     memset(s, 0, strlen(s));
 }
 
+static void ban_dest_add(int af, const char *addr, uint32_t mask)
+{
+    uint32_t ip4 = 0;
+    struct in6_addr ip6;
+    memset(&ip6, 0, sizeof(struct in6_addr));
+
+    if (af != AF_INET && af != AF_INET6) return;
+    if (inet_pton(af, addr, af == AF_INET ? reinterpret_cast<char *>(&ip4) : reinterpret_cast<char *>(&ip6)) != 1)
+        return;
+    ban_dest.push_back({ af, ip4, ip6, mask });
+}
+
 int main(int argc, char** argv) {
     bind_addr.v4.sin_family = AF_UNSPEC;
     std::vector<struct server> servers;
     std::vector<std::unique_ptr<thread>> threads;
     int ch;
     unsigned port = 1080;
+
     while ((ch = getopt(argc, argv, ":146b:u:C:U:P:i:p:d:")) != -1) {
         switch (ch) {
         case '1':
@@ -743,6 +799,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     signal(SIGPIPE, SIG_IGN);
+
+    ban_dest_add(AF_INET, "127.0.0.0", 8);
+    ban_dest_add(AF_INET6, "::1", 128);
 
     for (auto &i: servers) {
         if (server_setup(&i, port)) {
