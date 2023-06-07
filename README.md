@@ -45,10 +45,10 @@ $ su -
 
 Then the program can be run similarly to:
 
-`# muonsocks -u muonsocks -C /var/empty -4 -b 192.168.0.1 -b 10.0.0.1 -p 1080`
+`# muonsocks -u muonsocks -C /var/empty -4 -i 192.168.0.1 -i 10.0.0.1 -p 1080`
 
-Which would run a SOCKS5 server bound to 192.168.0.1:1080 and 10.0.0.1:1080
-that would only send outgoing IPv4 requests.
+Which would run a SOCKS5 server listening for requests on 192.168.0.1:1080 and
+10.0.0.1:1080 that would only send outgoing IPv4 requests.
 
 I suggest running muonsocks from a process supervisor such as
 [s6](http://www.skarnet.org/software/s6).  This will allow for reliable
@@ -106,7 +106,7 @@ libc is not even 50 KB. that's easily usable even on the cheapest routers.
 command line options
 ------------------------
 
-    muonsocks -1 -i listenip -p port -u user -P password -b bindaddr
+    muonsocks -1 -i listenip -p port -U user -P password -b bindaddr
 
 all arguments are optional.
 by default listenip is 0.0.0.0 and port 1080.
