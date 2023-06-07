@@ -29,6 +29,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
 #include <pthread.h>
@@ -111,6 +112,7 @@ static bool allow_ipv4 = true;
 static bool allow_ipv6 = true;
 static bool s6_notify_enable = false;
 static bool use_auth_ips = false;
+static bool g_logging = false;
 static std::vector<sockaddr_union *> auth_ips;
 static std::vector<bandst> ban_dest;
 static std::shared_mutex auth_ips_mtx;
@@ -135,17 +137,16 @@ enum errorcode {
     EC_ADDRESSTYPE_NOT_SUPPORTED = 8,
 };
 
-#ifndef CONFIG_LOG
-#define CONFIG_LOG 1
-#endif
-#if CONFIG_LOG
 /* we log to stderr because it's not using line buffering, i.e. malloc which would need
    locking when called from different threads. for the same reason we use dprintf,
    which writes directly to an fd. */
-#define dolog(...) dprintf(2, __VA_ARGS__)
-#else
-static void dolog(const char *, ...) { }
-#endif
+static void dolog(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    vdprintf(2, format, args);
+    va_end(args);
+}
 
 static int family_choose(struct addrinfo *remote, union sockaddr_union *bind_addr) {
     int family = SOCKADDR_UNION_AF(bind_addr);
@@ -341,9 +342,8 @@ static int send_error(const client &c, int fd, enum errorcode ec) {
 
 static void log_dc(int clientfd, char *clientname, char *namebuf, unsigned short port, size_t bsent, size_t brecv)
 {
-    if (CONFIG_LOG) {
-        dolog("client[%d] %s: disconnect from %s:%d sent:%zu recv:%zu\n", clientfd, clientname, namebuf, port, bsent, brecv);
-    }
+    if (!g_logging) return;
+    dolog("client[%d] %s: disconnect from %s:%d sent:%zu recv:%zu\n", clientfd, clientname, namebuf, port, bsent, brecv);
 }
 
 static void copyloop(int fd1, int fd2, char *buf, char *clientname, char *namebuf, unsigned short port) {
@@ -692,7 +692,7 @@ static void* clientthread(void *data) {
         return nullptr;
     }
 
-    if (CONFIG_LOG) {
+    if (g_logging) {
         int af = SOCKADDR_UNION_AF(&t->client.addr);
         void *ipdata = SOCKADDR_UNION_ADDRESS(&t->client.addr);
         inet_ntop(af, ipdata, clientname, sizeof clientname);
@@ -717,11 +717,16 @@ threads.erase(std::remove_if(threads.begin(), threads.end(),
 
 static int usage(void) {
     dprintf(2,
-            "muonsocks SOCKS5 Server\n"
+            "muonsocks SOCKS 4 and 5 Server\n"
             "------------------------\n"
-            "usage: muonsocks -1 -i listenip -p port -u user -P password -b bindaddr\n"
+            "usage: muonsocks -1 -i listenip -p port -U user -P password -b bindaddr\n"
             "all arguments are optional.\n"
-            "by default listenip is 0.0.0.0 and port 1080.\n\n"
+            "by default listenip is 0.0.0.0 and port 1080; -i may be given more than once.\n\n"
+            "option -v enables or disables logging\n"
+            "option -4 or -6 disables ipv6 or ipv4 respectively\n"
+            "option -u <user> runs muonsocks as the given user\n"
+            "option -C <dir> makes muonsocks chroot to the specified dir\n"
+            "option -d <fdnum> specifies the s6 notification file descriptor\n"
             "option -b specifies which ip outgoing connections are bound to\n"
             "option -1 activates auth_once mode: once a specific ip address\n"
             "authed successfully with user/pass, it is added to a whitelist\n"
@@ -757,7 +762,7 @@ int main(int argc, char** argv) {
     int ch;
     unsigned port = 1080;
 
-    while ((ch = getopt(argc, argv, ":146b:u:C:U:P:i:p:d:")) != -1) {
+    while ((ch = getopt(argc, argv, ":146vb:u:C:U:P:i:p:d:")) != -1) {
         switch (ch) {
         case '1':
             use_auth_ips = true;
@@ -767,6 +772,9 @@ int main(int argc, char** argv) {
             break;
         case '6':
             allow_ipv4 = false;
+            break;
+        case 'v':
+            g_logging = true;
             break;
         case 'b':
             resolve_sa(optarg, 0, &bind_addr);
