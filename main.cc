@@ -722,7 +722,7 @@ static int usage(void) {
             "usage: muonsocks -1 -i listenip -p port -U user -P password -b bindaddr\n"
             "all arguments are optional.\n"
             "by default listenip is 0.0.0.0 and port 1080; -i may be given more than once.\n\n"
-            "option -v enables or disables logging\n"
+            "option -v enables logging to stderr\n"
             "option -4 or -6 disables ipv6 or ipv4 respectively\n"
             "option -u <user> runs muonsocks as the given user\n"
             "option -C <dir> makes muonsocks chroot to the specified dir\n"
