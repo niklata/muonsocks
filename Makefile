@@ -5,8 +5,8 @@ prefix = /usr/local
 bindir = $(prefix)/bin
 
 PROG = muonsocks
-C_SRCS =  $(sort $(wildcard *.c) $(wildcard nk/*.c))
-CXX_SRCS =  $(sort $(wildcard *.cc))
+C_SRCS =  $(sort nk/privs.c)
+CXX_SRCS =  $(sort main.cc)
 OBJS = $(C_SRCS:.c=.o) $(CXX_SRCS:.cc=.o)
 DEPS = $(C_SRCS:.c=.d) $(CXX_SRCS:.cc=.d)
 
