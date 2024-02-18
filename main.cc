@@ -92,6 +92,7 @@ struct server {
 struct thread {
     pthread_t pt;
     struct client client;
+    thread *gc_next;
 };
 
 struct bandst {
@@ -118,7 +119,7 @@ static union sockaddr_union bind_addr;
 
 static std::atomic<bool> g_gc_pending;
 static std::mutex g_gc_mtx;
-static std::vector<thread *> g_gc_list;
+static thread *g_gc_list;
 
 enum authmethod : char {
     AM_NO_AUTH = 0,
@@ -492,7 +493,8 @@ static void* clientthread(void *data) {
         close(t->client.fd);
         {
             std::unique_lock mtx(g_gc_mtx);
-            g_gc_list.push_back(t);
+            t->gc_next = g_gc_list;
+            g_gc_list = t;
         }
         g_gc_pending = true;
     };
@@ -714,11 +716,12 @@ static void gc_threads() {
     if (g_gc_pending) {
         {
             std::unique_lock mtx(g_gc_mtx);
-            for (auto t: g_gc_list) {
+            while (g_gc_list) {
+                thread *t = g_gc_list;
+                g_gc_list = g_gc_list->gc_next;
                 pthread_join(t->pt, 0);
                 free(t);
             }
-            g_gc_list.clear();
         }
         g_gc_pending = false;
     }
