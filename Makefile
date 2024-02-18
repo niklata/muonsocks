@@ -9,7 +9,7 @@ C_SRCS =  $(sort nk/privs.c main.c)
 OBJS = $(C_SRCS:.c=.o) $(CXX_SRCS:.cc=.o)
 DEPS = $(C_SRCS:.c=.d) $(CXX_SRCS:.cc=.d)
 
-CFLAGS = -MMD -O2 -flto -s -std=c17 -I. -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -Wstrict-overflow=5 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
+CFLAGS = -MMD -O2 -flto -s -std=c17 -I. -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -Wshadow -Wpointer-arith -Wmissing-prototypes -Wcast-qual -Wsign-conversion -Wstrict-overflow=5 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
 CPPFLAGS += $(INC)
 
 #CFLAGS += -fsanitize=undefined

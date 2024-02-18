@@ -143,13 +143,13 @@ static void dolog(const char *format, ...)
     va_end(args);
 }
 
-static int family_choose(struct addrinfo *remote, union sockaddr_union *bind_addr) {
-    int family = SOCKADDR_UNION_AF(bind_addr);
+static int family_choose(struct addrinfo *remote, union sockaddr_union *addr) {
+    int family = SOCKADDR_UNION_AF(addr);
     return family == AF_UNSPEC ? remote->ai_family : family;
 }
 
-static struct addrinfo* addr_choose(struct addrinfo *list, union sockaddr_union *bind_addr) {
-    int family = SOCKADDR_UNION_AF(bind_addr);
+static struct addrinfo* addr_choose(struct addrinfo *list, union sockaddr_union *addr) {
+    int family = SOCKADDR_UNION_AF(addr);
     if (family == AF_UNSPEC) return list;
     struct addrinfo *p;
     for (p = list; p; p = p->ai_next) {
@@ -376,10 +376,11 @@ read_retry:
                 return;
             }
         }
-        if (infd == fd1) bsent += n;
-        else brecv += n;
+        assert(n >= 0);
+        if (infd == fd1) bsent += (size_t)n;
+        else brecv += (size_t)n;
         while (sent < n) {
-            ssize_t m = write(outfd, buf+sent, n-sent);
+            ssize_t m = write(outfd, buf+sent, (size_t)(n-sent));
             if (m < 0) {
                 if (errno == EINTR) continue;
                 log_dc(fd1, clientname, namebuf, port, bsent, brecv);
@@ -401,7 +402,7 @@ static bool extend_cbuf(const struct thread *t, char *buf, size_t *buflen)
             if (errno == EINTR) continue;
             return false;
         }
-        *buflen += n;
+        *buflen += (size_t)n;
         return true;
     }
 }
@@ -490,7 +491,7 @@ static void* clientthread(void *data) {
     t->client.socksver = buf[0];
     if (t->client.socksver == 5) {
         while (buflen < 2) { EXTEND_BUF(); }
-        size_t n_methods = buf[1];
+        size_t n_methods = buf[1] >= 0 ? (size_t)buf[1] : 0;
         while (buflen < 2 + n_methods) { EXTEND_BUF(); }
         for (size_t i = 0; i < n_methods; ++i) {
             if (buf[2 + i] == AM_NO_AUTH) {
@@ -524,9 +525,9 @@ static void* clientthread(void *data) {
             while (buflen < 5) { EXTEND_BUF(); }
             if (buf[0] != 1) goto out0;
             unsigned ulen, plen;
-            ulen = buf[1];
+            ulen = buf[1] >= 0 ? (unsigned)buf[1] : 0;
             while (buflen < 2 + ulen + 2) { EXTEND_BUF(); }
-            plen = buf[2 + ulen];
+            plen = buf[2 + ulen] >= 0 ? (unsigned)buf[2 + ulen] : 0;
             while (buflen < 2 + ulen + 1 + plen) { EXTEND_BUF(); }
             char user[256], pass[256];
             memcpy(user, buf + 2, ulen);
@@ -562,7 +563,7 @@ static void* clientthread(void *data) {
 
         size_t minlen;
         if (buf[3] == 3) {
-            size_t l = buf[4];
+            size_t l = buf[4] >= 0 ? (size_t)buf[4] : 0;
             minlen = 4 + 1 + l + 2;
             while (buflen < minlen) { EXTEND_BUF(); }
             memcpy(namebuf, buf + 4 + 1, l);
@@ -772,7 +773,7 @@ int main(int argc, char** argv) {
     size_t nsrvrs = 0;
     struct server *srvrs = NULL;
     int ch;
-    unsigned port = 1080;
+    unsigned short port = 1080;
 
     while ((ch = getopt(argc, argv, ":146vb:u:C:U:P:i:p:d:")) != -1) {
         switch (ch) {
@@ -817,9 +818,15 @@ int main(int argc, char** argv) {
             }
             srvrs[nsrvrs++].listenip = optarg;
             break;
-        case 'p':
-            port = atoi(optarg);
+        case 'p': {
+            int p = atoi(optarg);
+            if (p < 0) {
+                dprintf(2, "-p PORT can't be negative\n");
+                return 1;
+            }
+            port = (unsigned short)p;
             break;
+        }
         case 'd':
             s6_notify_fd = atoi(optarg);
             s6_notify_enable = true;
