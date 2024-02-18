@@ -42,7 +42,6 @@
 #include <limits.h>
 #include <assert.h>
 #include <atomic>
-#include "nk/scopeguard.hpp"
 #include "sockunion.h"
 extern "C" {
 #include "nk/privs.h"
@@ -410,7 +409,7 @@ static bool extend_cbuf(const thread *t, char *buf, size_t &buflen)
     }
 }
 
-#define EXTEND_BUF() do { if (!extend_cbuf(t, buf, buflen)) return nullptr; } while (0)
+#define EXTEND_BUF() do { if (!extend_cbuf(t, buf, buflen)) goto out0; } while (0)
 #define RESET_BUF() do { buflen = 0; } while (0)
 
 static enum errorcode errno_to_sockscode()
@@ -469,6 +468,18 @@ static bool is_banned(int family, const struct addrinfo *remote)
     return false;
 }
 
+static void clientthread_cleanup(thread *t)
+{
+    close(t->client.fd);
+    {
+        if (pthread_mutex_lock(&g_gc_mtx)) perror("mutex_lock");
+        t->gc_next = g_gc_list;
+        g_gc_list = t;
+        if (pthread_mutex_unlock(&g_gc_mtx)) perror("mutex_unlock");
+    }
+    std::atomic_store(&g_gc_pending, 1);
+}
+
 static void* clientthread(void *data) {
     auto t = static_cast<thread *>(data);
     char buf[BUF_SIZE];
@@ -479,16 +490,6 @@ static void* clientthread(void *data) {
     int fam = AF_UNSPEC;
     unsigned short port;
 
-    SCOPE_EXIT {
-        close(t->client.fd);
-        {
-            if (pthread_mutex_lock(&g_gc_mtx)) perror("mutex_lock");
-            t->gc_next = g_gc_list;
-            g_gc_list = t;
-            if (pthread_mutex_unlock(&g_gc_mtx)) perror("mutex_unlock");
-        }
-        std::atomic_store(&g_gc_pending, 1);
-    };
     EXTEND_BUF();
 
     t->client.socksver = buf[0];
@@ -520,13 +521,13 @@ static void* clientthread(void *data) {
                 }
             }
         }
-        if (am == AM_INVALID) return nullptr;
+        if (am == AM_INVALID) goto out0;
 
         RESET_BUF();
-        if (send_auth_response(t->client.fd, 5, am) < 0) return nullptr;
+        if (send_auth_response(t->client.fd, 5, am) < 0) goto out0;
         if (am == AM_USERNAME) {
             while (buflen < 5) { EXTEND_BUF(); }
-            if (buf[0] != 1) return nullptr;
+            if (buf[0] != 1) goto out0;
             unsigned ulen, plen;
             ulen = buf[1];
             while (buflen < 2 + ulen + 2) { EXTEND_BUF(); }
@@ -538,14 +539,14 @@ static void* clientthread(void *data) {
             user[ulen] = 0;
             pass[plen] = 0;
             bool allow = !strcmp(user, g_auth_user) && !strcmp(pass, g_auth_pass);
-            if (!allow) return nullptr;
+            if (!allow) goto out0;
             if (use_auth_ips) {
                 if (pthread_mutex_lock(&auth_ips_mtx)) perror("mutex_lock");
                 if (!is_in_authed_list(&t->client.addr))
                     add_auth_ip(&t->client.addr);
                 if (pthread_mutex_unlock(&auth_ips_mtx)) perror("mutex_unlock");
             }
-            if (send_auth_response(t->client.fd, 1, am) < 0) return nullptr;
+            if (send_auth_response(t->client.fd, 1, am) < 0) goto out0;
             RESET_BUF();
         }
 
@@ -553,15 +554,15 @@ static void* clientthread(void *data) {
         while (buflen < 5) { EXTEND_BUF(); }
         if (buf[0] != 5) {
             send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
-            return nullptr;
+            goto out0;
         }
         if (buf[1] != 1) {
             send_error(t->client, t->client.fd, EC_COMMAND_NOT_SUPPORTED);
-            return nullptr;
+            goto out0;
         }
         if (buf[2] != 0) {
             send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
-            return nullptr;
+            goto out0;
         }
 
         size_t minlen;
@@ -581,12 +582,12 @@ static void* clientthread(void *data) {
                 minlen = 4 + 16 + 2;
             } else {
                 send_error(t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
-                return nullptr;
+                goto out0;
             }
             while (buflen < minlen) { EXTEND_BUF(); }
             if (namebuf != inet_ntop(af, buf + 4, namebuf, sizeof namebuf)) {
                 send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
-                return nullptr;
+                goto out0;
             }
         }
         memcpy(&port, buf + minlen - 2, 2);
@@ -596,21 +597,21 @@ static void* clientthread(void *data) {
     } else if (t->client.socksver == 4) {
         if (g_auth_pass) {
             send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
-            return nullptr;
+            goto out0;
         }
         if (!allow_ipv4) {
             send_error(t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
-            return nullptr;
+            goto out0;
         }
 
         while (buflen < 9) { EXTEND_BUF(); }
         if (buf[0] != 4) {
             send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
-            return nullptr;
+            goto out0;
         }
         if (buf[1] != 1) {
             send_error(t->client, t->client.fd, EC_COMMAND_NOT_SUPPORTED);
-            return nullptr;
+            goto out0;
         }
         memcpy(&port, buf + 2, 2);
         port = ntohs(port);
@@ -621,7 +622,7 @@ static void* clientthread(void *data) {
         } else {
             if (namebuf != inet_ntop(AF_INET, buf + 4, namebuf, sizeof namebuf)) {
                 send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
-                return nullptr;
+                goto out0;
             }
         }
         size_t i = 8;
@@ -629,7 +630,7 @@ static void* clientthread(void *data) {
             // Here we just skip the userid for now
             if (i > BUF_SIZE / 2) {
                 send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
-                return nullptr;
+                goto out0;
             }
             while (buflen < i + 1) { EXTEND_BUF(); }
             if (buf[i] == 0) { ++i; break; }
@@ -639,7 +640,7 @@ static void* clientthread(void *data) {
             for (;;++i) {
                 if (i - buf_start > sizeof namebuf - 1) {
                     send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
-                    return nullptr;
+                    goto out0;
                 }
                 while (buflen < i + 1) { EXTEND_BUF(); }
                 if (buf[i] == 0) {
@@ -651,46 +652,46 @@ static void* clientthread(void *data) {
         }
         fam = AF_INET;
     } else {
-        return nullptr;
+        goto out0;
     }
     /* there's no suitable errorcode in rfc1928 for dns lookup failure */
-    struct addrinfo* remote;
+    struct addrinfo *remote, *addr;
     if (resolve(namebuf, port, fam, &remote)) {
         send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
-        return nullptr;
+        goto out0;
     }
-    SCOPE_EXIT { freeaddrinfo(remote); };
+    // DO NOT USE EXTEND_BUF() AT THIS POINT OR BEYOND WITHOUT UPDATING IT!
     if (!allow_ipv6 && remote->ai_addr->sa_family == AF_INET6) {
         send_error(t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
-        return nullptr;
+        goto out1;
     }
     if (!allow_ipv4 && remote->ai_addr->sa_family == AF_INET) {
         send_error(t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
-        return nullptr;
+        goto out1;
     }
-    int family = family_choose(remote, &bind_addr);
+    int family, fd, flags;
+    family = family_choose(remote, &bind_addr);
     if (is_banned(family, remote)) {
         send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
-        return nullptr;
+        goto out1;
     }
-    int fd = socket(family, SOCK_STREAM|SOCK_CLOEXEC, 0);
+    fd = socket(family, SOCK_STREAM|SOCK_CLOEXEC, 0);
     if (fd == -1) {
         send_error(t->client, t->client.fd, errno_to_sockscode());
-        return nullptr;
+        goto out1;
     }
-    SCOPE_EXIT { close(fd); };
-    int flags = 1;
+    flags = 1;
     if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0) {
         dprintf(2, "failed to set TCP_NODELAY on remote socket\n");
     }
     if (SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1) {
         send_error(t->client, t->client.fd, errno_to_sockscode());
-        return nullptr;
+        goto out2;
     }
-    struct addrinfo *addr = addr_choose(remote, &bind_addr);
+    addr = addr_choose(remote, &bind_addr);
     if (connect(fd, addr->ai_addr, addr->ai_addrlen) == -1) {
         send_error(t->client, t->client.fd, errno_to_sockscode());
-        return nullptr;
+        goto out2;
     }
 
     if (g_logging) {
@@ -699,9 +700,15 @@ static void* clientthread(void *data) {
         inet_ntop(af, ipdata, clientname, sizeof clientname);
         dolog("client[%d] %s: connected to %s:%d\n", t->client.fd, clientname, namebuf, port);
     }
-    if (send_error(t->client, t->client.fd, EC_SUCCESS) < 0) return nullptr;
+    if (send_error(t->client, t->client.fd, EC_SUCCESS) < 0) goto out2;
     RESET_BUF();
     copyloop(t->client.fd, fd, buf, clientname, namebuf, port);
+ out2:
+    close(fd);
+ out1:
+    freeaddrinfo(remote);
+ out0:
+    clientthread_cleanup(t);
     return nullptr;
 }
 
