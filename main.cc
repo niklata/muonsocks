@@ -42,7 +42,6 @@
 #include <limits.h>
 #include <assert.h>
 #include <atomic>
-#include <utility>
 #include "nk/scopeguard.hpp"
 #include "sockunion.h"
 extern "C" {
@@ -113,7 +112,7 @@ static bandst *ban_dest;
 static pthread_mutex_t auth_ips_mtx;
 static union sockaddr_union bind_addr;
 
-static std::atomic<bool> g_gc_pending;
+static std::atomic_int g_gc_pending;
 static pthread_mutex_t g_gc_mtx;
 static thread *g_gc_list;
 
@@ -497,7 +496,7 @@ static void* clientthread(void *data) {
             g_gc_list = t;
             if (pthread_mutex_unlock(&g_gc_mtx)) perror("mutex_unlock");
         }
-        g_gc_pending = true;
+        std::atomic_store(&g_gc_pending, 1);
     };
     EXTEND_BUF();
 
@@ -716,7 +715,7 @@ static void* clientthread(void *data) {
 }
 
 static void gc_threads() {
-    if (g_gc_pending) {
+    if (std::atomic_load(&g_gc_pending)) {
         {
             if (pthread_mutex_lock(&g_gc_mtx)) perror("mutex_lock");
             while (g_gc_list) {
@@ -727,7 +726,7 @@ static void gc_threads() {
             }
             if (pthread_mutex_unlock(&g_gc_mtx)) perror("mutex_unlock");
         }
-        g_gc_pending = false;
+        std::atomic_store(&g_gc_pending, 0);
     }
 }
 
