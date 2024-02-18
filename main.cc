@@ -41,7 +41,6 @@
 #include <errno.h>
 #include <limits.h>
 #include <cassert>
-#include <memory>
 #include <vector>
 #include <atomic>
 #include <mutex>
@@ -84,7 +83,6 @@ struct client {
 };
 
 struct server {
-    server(const char *lip) : listenip(lip) {}
     const char *listenip;
     int fd;
 };
@@ -769,7 +767,8 @@ static void ban_dest_add(int af, const char *addr, uint32_t mask)
 
 int main(int argc, char** argv) {
     bind_addr.v4.sin_family = AF_UNSPEC;
-    std::vector<struct server> servers;
+    size_t nsrvrs = 0;
+    server *srvrs = nullptr;
     int ch;
     unsigned port = 1080;
 
@@ -809,7 +808,12 @@ int main(int argc, char** argv) {
             zero_arg(optarg);
             break;
         case 'i':
-            servers.emplace_back(optarg);
+            srvrs = static_cast<server *>(reallocarray(srvrs, nsrvrs + 1, sizeof(server)));
+            if (!srvrs) {
+                dprintf(2, "error: reallocarray failed\n");
+                return 1;
+            }
+            srvrs[nsrvrs++].listenip = optarg;
             break;
         case 'p':
             port = atoi(optarg);
@@ -825,7 +829,14 @@ int main(int argc, char** argv) {
             return usage();
         }
     }
-    if (servers.empty()) servers.emplace_back("0.0.0.0");
+    if (nsrvrs == 0) {
+        srvrs = static_cast<server *>(reallocarray(srvrs, nsrvrs + 1, sizeof(server)));
+        if (!srvrs) {
+            dprintf(2, "error: reallocarray failed\n");
+            return 1;
+        }
+        srvrs[nsrvrs++].listenip = "0.0.0.0";
+    }
     if ((g_auth_user && !g_auth_pass) || (!g_auth_user && g_auth_pass)) {
         dprintf(2, "error: user and pass must be used together\n");
         return 1;
@@ -843,11 +854,12 @@ int main(int argc, char** argv) {
     ban_dest_add(AF_INET, "127.0.0.0", 8);
     ban_dest_add(AF_INET6, "::1", 128);
 
-    for (auto &i: servers) {
-        if (server_setup(&i, port)) {
+    for (size_t i = 0; i < nsrvrs; ++i) {
+        if (server_setup(&srvrs[i], port)) {
             perror("server_setup");
             return 1;
         }
+
     }
 
     /* This is tricky -- we *must* use a name that will not be in hosts,
@@ -871,9 +883,9 @@ int main(int argc, char** argv) {
     if (g_user_id)
         nk_set_uidgid(muonsocks_uid, muonsocks_gid, NULL, 0);
 
-    auto fds = std::make_unique<struct pollfd[]>(servers.size());
-    for (size_t i = 0, iend = servers.size(); i < iend; ++i) {
-        fds[i] = { servers[i].fd, POLLIN, 0 };
+    struct pollfd *fds = static_cast<struct pollfd *>(malloc(nsrvrs * sizeof(struct pollfd)));
+    for (size_t i = 0; i < nsrvrs; ++i) {
+        fds[i] = { srvrs[i].fd, POLLIN, 0 };
     }
 
     if (s6_notify_enable) {
@@ -891,17 +903,17 @@ int main(int argc, char** argv) {
     }
     for (;;) {
         gc_threads();
-        switch (poll(fds.get(), servers.size(), -1)) {
+        switch (poll(fds, nsrvrs, -1)) {
         default: break;
         case -1: if (errno == EINTR || errno == EAGAIN) continue;
                  else perror("poll");
         case 0:  continue;
         }
-        for (size_t i = 0, iend = servers.size(); i < iend; ++i) {
+        for (size_t i = 0; i < nsrvrs; ++i) {
             if (fds[i].revents & POLLIN) {
                 for (;;) {
                     struct client c;
-                    if (server_waitclient(&servers[i], &c))
+                    if (server_waitclient(&srvrs[i], &c))
                         break;
                     auto ct = static_cast<thread *>(malloc(sizeof(thread)));
                     if (!ct) {
