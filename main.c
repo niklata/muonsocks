@@ -41,11 +41,9 @@
 #include <errno.h>
 #include <limits.h>
 #include <assert.h>
-#include <atomic>
+#include <stdatomic.h>
 #include "sockunion.h"
-extern "C" {
 #include "nk/privs.h"
-}
 
 #ifndef MAX
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
@@ -84,7 +82,7 @@ struct server {
 struct thread {
     pthread_t pt;
     struct client client;
-    thread *gc_next;
+    struct thread *gc_next;
 };
 
 struct bandst {
@@ -94,10 +92,10 @@ struct bandst {
     uint32_t mask;
 };
 
-static const char* g_user_id;
-static const char* g_chroot;
-static const char* g_auth_user;
-static const char* g_auth_pass;
+static char *g_user_id;
+static char *g_chroot;
+static char *g_auth_user;
+static char *g_auth_pass;
 static int s6_notify_fd = 3;
 static bool allow_ipv4 = true;
 static bool allow_ipv6 = true;
@@ -106,16 +104,16 @@ static bool use_auth_ips = false;
 static bool g_logging = false;
 static size_t nauth_ips;
 static size_t nban_dest;
-static sockaddr_union *auth_ips;
-static bandst *ban_dest;
+static union sockaddr_union *auth_ips;
+static struct bandst *ban_dest;
 static pthread_mutex_t auth_ips_mtx;
 static union sockaddr_union bind_addr;
 
-static std::atomic_int g_gc_pending;
+static atomic_int g_gc_pending;
 static pthread_mutex_t g_gc_mtx;
-static thread *g_gc_list;
+static struct thread *g_gc_list;
 
-enum authmethod : char {
+enum authmethod {
     AM_NO_AUTH = 0,
     AM_GSSAPI = 1,
     AM_USERNAME = 2,
@@ -162,14 +160,13 @@ static struct addrinfo* addr_choose(struct addrinfo *list, union sockaddr_union 
 }
 
 static int resolve(const char *host, unsigned short port, int fam, struct addrinfo** addr) {
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof hints);
+    struct addrinfo hints = {0};
     hints.ai_family = fam;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
     char port_buf[8];
     int sz = snprintf(port_buf, sizeof port_buf, "%u", port);
-    if (sz < 0 || static_cast<unsigned>(sz) >= sizeof port_buf) return EAI_SYSTEM;
+    if (sz < 0 || (size_t)sz >= sizeof port_buf) return EAI_SYSTEM;
     return getaddrinfo(host, port_buf, &hints, addr);
 }
 
@@ -195,15 +192,15 @@ static int bindtoip(int fd, union sockaddr_union *bindaddr) {
         dprintf(2, "failed to set %s on client socket\n", bindport ? "SO_REUSEADDR" : "IP_BIND_ADDRESS_NO_PORT");
     }
 #endif
-    return bind(fd, reinterpret_cast<const sockaddr *>(bindaddr), sz);
+    return bind(fd, (struct sockaddr *)bindaddr, sz);
 }
 
 static int server_waitclient(struct server *server, struct client* client) {
     socklen_t clen = sizeof client->addr;
 #ifndef __linux__
-    client->fd = accept(server->fd, reinterpret_cast<sockaddr *>(&client->addr), &clen);
+    client->fd = accept(server->fd, (struct sockaddr *)&client->addr, &clen);
 #else
-    client->fd = accept4(server->fd, reinterpret_cast<sockaddr *>(&client->addr), &clen, SOCK_CLOEXEC);
+    client->fd = accept4(server->fd, (struct sockaddr *)&client->addr, &clen, SOCK_CLOEXEC);
 #endif
     if (client->fd == -1) {
         usleep(1000); // Prevent busy-spin when fd limit is reached
@@ -217,7 +214,7 @@ static int server_waitclient(struct server *server, struct client* client) {
 }
 
 static int server_setup(struct server *server, unsigned short port) {
-    struct addrinfo *ainfo = nullptr;
+    struct addrinfo *ainfo = NULL;
     if (resolve(server->listenip, port, AF_UNSPEC, &ainfo)) return -1;
     int listenfd = -1;
     for (struct addrinfo *p = ainfo; p; p = p->ai_next) {
@@ -266,7 +263,7 @@ static int is_in_authed_list(union sockaddr_union *caddr) {
 }
 
 static void add_auth_ip(union sockaddr_union *caddr) {
-    auth_ips = static_cast<union sockaddr_union *>(reallocarray(auth_ips, nauth_ips + 1, sizeof(union sockaddr_union)));
+    auth_ips = reallocarray(auth_ips, nauth_ips + 1, sizeof(union sockaddr_union));
     if (!auth_ips) dprintf(2, "error: reallocarray failed\n");
     memcpy(auth_ips + (nauth_ips++), caddr, sizeof *caddr);
 }
@@ -280,33 +277,33 @@ static int send_auth_response(int fd, char version, enum authmethod method) {
     }
 }
 
-static int send_error(const client &c, int fd, enum errorcode ec) {
-    struct sockaddr_storage srcaddr = {};
+static int send_error(const struct client *c, int fd, enum errorcode ec) {
+    struct sockaddr_storage srcaddr = {0};
     srcaddr.ss_family = AF_INET; // for non-EC_SUCCESS case
     if (ec == EC_SUCCESS) {
         socklen_t srcaddrlen = sizeof srcaddr;
-        if (getsockname(fd, reinterpret_cast<struct sockaddr *>(&srcaddr), &srcaddrlen) == -1) return -1;
+        if (getsockname(fd, (struct sockaddr *)&srcaddr, &srcaddrlen) == -1) return -1;
     }
     char b[24];
     size_t blen;
-    if (c.socksver == 5) {
+    if (c->socksver == 5) {
         b[0] = 5;
         b[1] = ec;
         b[2] = 0;
         if (srcaddr.ss_family == AF_INET) {
             b[3] = 1;
-            const sockaddr_in *sa = reinterpret_cast<sockaddr_in *>(&srcaddr);
+            const struct sockaddr_in *sa = (struct sockaddr_in *)&srcaddr;
             memcpy(b + 4, &sa->sin_addr, 4);
             memcpy(b + 8, &sa->sin_port, 2);
             blen = 10;
         } else {
             b[3] = 4;
-            const sockaddr_in6 *sa = reinterpret_cast<sockaddr_in6 *>(&srcaddr);
+            const struct sockaddr_in6 *sa =(struct sockaddr_in6 *) &srcaddr;
             memcpy(b + 4, &sa->sin6_addr, 16);
             memcpy(b + 20, &sa->sin6_port, 2);
             blen = 22;
         }
-    } else if (c.socksver == 4) {
+    } else if (c->socksver == 4) {
         if (srcaddr.ss_family != AF_INET) {
             // We could return -1 here, except it would break connections in
             // the case that the client requested a destination by DNS address
@@ -314,9 +311,9 @@ static int send_error(const client &c, int fd, enum errorcode ec) {
             // lesser evil is to just lie and report a zero IP.
             memset(&srcaddr, 0, sizeof srcaddr);
         }
-        const sockaddr_in *sa = reinterpret_cast<sockaddr_in *>(&srcaddr);
+        const struct sockaddr_in *sa = (struct sockaddr_in *)&srcaddr;
         b[0] = 0;
-        b[1] = ec == EC_SUCCESS ? char(0x5a) : char(0x5b);
+        b[1] = ec == EC_SUCCESS ? (char)0x5a : (char)0x5b;
         memcpy(b + 2, &sa->sin_port, 2);
         memcpy(b + 4, &sa->sin_addr, 4);
         blen = 8;
@@ -326,7 +323,7 @@ static int send_error(const client &c, int fd, enum errorcode ec) {
     for (;;) {
         ssize_t r = write(fd, b, blen);
         if (r == -1 && errno == EINTR) continue;
-        return r == static_cast<ssize_t>(blen) ? r : -1;
+        return r == (ssize_t)blen ? r : -1;
     }
 }
 
@@ -352,7 +349,7 @@ static void copyloop(int fd1, int fd2, char *buf, char *clientname, char *namebu
         case -1:
                  if (errno == EINTR || errno == EAGAIN) continue;
                  else perror("poll");
-                 [[fallthrough]];
+                 // fall through
         case 0:
                  log_dc(fd1, clientname, namebuf, port, bsent, brecv);
                  return;
@@ -394,25 +391,25 @@ read_retry:
     }
 }
 
-static bool extend_cbuf(const thread *t, char *buf, size_t &buflen)
+static bool extend_cbuf(const struct thread *t, char *buf, size_t *buflen)
 {
     for (;;) {
-        ssize_t n = read(t->client.fd, buf + buflen, BUF_SIZE - buflen);
+        ssize_t n = read(t->client.fd, buf + *buflen, BUF_SIZE - *buflen);
         if (n == 0) {
             return false;
         } else if (n < 0) {
             if (errno == EINTR) continue;
             return false;
         }
-        buflen += n;
+        *buflen += n;
         return true;
     }
 }
 
-#define EXTEND_BUF() do { if (!extend_cbuf(t, buf, buflen)) goto out0; } while (0)
+#define EXTEND_BUF() do { if (!extend_cbuf(t, buf, &buflen)) goto out0; } while (0)
 #define RESET_BUF() do { buflen = 0; } while (0)
 
-static enum errorcode errno_to_sockscode()
+static enum errorcode errno_to_sockscode(void)
 {
     switch (errno) {
     case ETIMEDOUT:
@@ -440,14 +437,12 @@ static bool is_banned(int family, const struct addrinfo *remote)
         if (ban_dest[i].fam == family) {
             unsigned char abuf[16], bbuf[16];
             size_t addrsize = family == AF_INET ? 4 : 16;
-            sockaddr_in *ai4 = reinterpret_cast<sockaddr_in *>(remote->ai_addr);
-            sockaddr_in6 *ai6 = reinterpret_cast<sockaddr_in6 *>(remote->ai_addr);
-            memcpy(abuf, family == AF_INET ? reinterpret_cast<const void *>(&ai4->sin_addr)
-                                           : reinterpret_cast<const void *>(&ai6->sin6_addr),
-                   addrsize);
-            memcpy(bbuf, family == AF_INET ? reinterpret_cast<const void *>(&ban_dest[i].addr4)
-                                           : reinterpret_cast<const void *>(&ban_dest[i].addr6),
-                   addrsize);
+            struct sockaddr_in *ai4 = (struct sockaddr_in *)remote->ai_addr;
+            struct sockaddr_in6 *ai6 = (struct sockaddr_in6 *)remote->ai_addr;
+            memcpy(abuf, family == AF_INET ? (const void *)&ai4->sin_addr
+                                           : (const void *)&ai6->sin6_addr, addrsize);
+            memcpy(bbuf, family == AF_INET ? (const void *)&ban_dest[i].addr4
+                                           : (const void *)&ban_dest[i].addr6, addrsize);
             unsigned char *p = abuf, *q = bbuf;
             uint32_t m = ban_dest[i].mask;
             if (family == AF_INET6 && m > 128) m = 128;
@@ -468,7 +463,7 @@ static bool is_banned(int family, const struct addrinfo *remote)
     return false;
 }
 
-static void clientthread_cleanup(thread *t)
+static void clientthread_cleanup(struct thread *t)
 {
     close(t->client.fd);
     {
@@ -477,11 +472,11 @@ static void clientthread_cleanup(thread *t)
         g_gc_list = t;
         if (pthread_mutex_unlock(&g_gc_mtx)) perror("mutex_unlock");
     }
-    std::atomic_store(&g_gc_pending, 1);
+    atomic_store(&g_gc_pending, 1);
 }
 
 static void* clientthread(void *data) {
-    thread *t = static_cast<thread *>(data);
+    struct thread *t = (struct thread *)data;
     char buf[BUF_SIZE];
     char namebuf[256];
     char clientname[256] = { 0 };
@@ -553,15 +548,15 @@ static void* clientthread(void *data) {
         // Now we're done with the authentication negotiations.
         while (buflen < 5) { EXTEND_BUF(); }
         if (buf[0] != 5) {
-            send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
+            send_error(&t->client, t->client.fd, EC_GENERAL_FAILURE);
             goto out0;
         }
         if (buf[1] != 1) {
-            send_error(t->client, t->client.fd, EC_COMMAND_NOT_SUPPORTED);
+            send_error(&t->client, t->client.fd, EC_COMMAND_NOT_SUPPORTED);
             goto out0;
         }
         if (buf[2] != 0) {
-            send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
+            send_error(&t->client, t->client.fd, EC_GENERAL_FAILURE);
             goto out0;
         }
 
@@ -581,12 +576,12 @@ static void* clientthread(void *data) {
                 af = AF_INET6;
                 minlen = 4 + 16 + 2;
             } else {
-                send_error(t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
+                send_error(&t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
                 goto out0;
             }
             while (buflen < minlen) { EXTEND_BUF(); }
             if (namebuf != inet_ntop(af, buf + 4, namebuf, sizeof namebuf)) {
-                send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
+                send_error(&t->client, t->client.fd, EC_GENERAL_FAILURE);
                 goto out0;
             }
         }
@@ -596,21 +591,21 @@ static void* clientthread(void *data) {
         if (!allow_ipv6) fam = AF_INET;
     } else if (t->client.socksver == 4) {
         if (g_auth_pass) {
-            send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
+            send_error(&t->client, t->client.fd, EC_GENERAL_FAILURE);
             goto out0;
         }
         if (!allow_ipv4) {
-            send_error(t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
+            send_error(&t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
             goto out0;
         }
 
         while (buflen < 9) { EXTEND_BUF(); }
         if (buf[0] != 4) {
-            send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
+            send_error(&t->client, t->client.fd, EC_GENERAL_FAILURE);
             goto out0;
         }
         if (buf[1] != 1) {
-            send_error(t->client, t->client.fd, EC_COMMAND_NOT_SUPPORTED);
+            send_error(&t->client, t->client.fd, EC_COMMAND_NOT_SUPPORTED);
             goto out0;
         }
         memcpy(&port, buf + 2, 2);
@@ -621,7 +616,7 @@ static void* clientthread(void *data) {
             is_dns = true;
         } else {
             if (namebuf != inet_ntop(AF_INET, buf + 4, namebuf, sizeof namebuf)) {
-                send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
+                send_error(&t->client, t->client.fd, EC_GENERAL_FAILURE);
                 goto out0;
             }
         }
@@ -629,7 +624,7 @@ static void* clientthread(void *data) {
         for (;;++i) {
             // Here we just skip the userid for now
             if (i > BUF_SIZE / 2) {
-                send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
+                send_error(&t->client, t->client.fd, EC_GENERAL_FAILURE);
                 goto out0;
             }
             while (buflen < i + 1) { EXTEND_BUF(); }
@@ -639,7 +634,7 @@ static void* clientthread(void *data) {
             size_t buf_start = i;
             for (;;++i) {
                 if (i - buf_start > sizeof namebuf - 1) {
-                    send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
+                    send_error(&t->client, t->client.fd, EC_GENERAL_FAILURE);
                     goto out0;
                 }
                 while (buflen < i + 1) { EXTEND_BUF(); }
@@ -657,27 +652,27 @@ static void* clientthread(void *data) {
     /* there's no suitable errorcode in rfc1928 for dns lookup failure */
     struct addrinfo *remote, *addr;
     if (resolve(namebuf, port, fam, &remote)) {
-        send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
+        send_error(&t->client, t->client.fd, EC_GENERAL_FAILURE);
         goto out0;
     }
     // DO NOT USE EXTEND_BUF() AT THIS POINT OR BEYOND WITHOUT UPDATING IT!
     if (!allow_ipv6 && remote->ai_addr->sa_family == AF_INET6) {
-        send_error(t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
+        send_error(&t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
         goto out1;
     }
     if (!allow_ipv4 && remote->ai_addr->sa_family == AF_INET) {
-        send_error(t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
+        send_error(&t->client, t->client.fd, EC_ADDRESSTYPE_NOT_SUPPORTED);
         goto out1;
     }
     int family, fd, flags;
     family = family_choose(remote, &bind_addr);
     if (is_banned(family, remote)) {
-        send_error(t->client, t->client.fd, EC_GENERAL_FAILURE);
+        send_error(&t->client, t->client.fd, EC_GENERAL_FAILURE);
         goto out1;
     }
     fd = socket(family, SOCK_STREAM|SOCK_CLOEXEC, 0);
     if (fd == -1) {
-        send_error(t->client, t->client.fd, errno_to_sockscode());
+        send_error(&t->client, t->client.fd, errno_to_sockscode());
         goto out1;
     }
     flags = 1;
@@ -685,12 +680,12 @@ static void* clientthread(void *data) {
         dprintf(2, "failed to set TCP_NODELAY on remote socket\n");
     }
     if (SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1) {
-        send_error(t->client, t->client.fd, errno_to_sockscode());
+        send_error(&t->client, t->client.fd, errno_to_sockscode());
         goto out2;
     }
     addr = addr_choose(remote, &bind_addr);
     if (connect(fd, addr->ai_addr, addr->ai_addrlen) == -1) {
-        send_error(t->client, t->client.fd, errno_to_sockscode());
+        send_error(&t->client, t->client.fd, errno_to_sockscode());
         goto out2;
     }
 
@@ -700,7 +695,7 @@ static void* clientthread(void *data) {
         inet_ntop(af, ipdata, clientname, sizeof clientname);
         dolog("client[%d] %s: connected to %s:%d\n", t->client.fd, clientname, namebuf, port);
     }
-    if (send_error(t->client, t->client.fd, EC_SUCCESS) < 0) goto out2;
+    if (send_error(&t->client, t->client.fd, EC_SUCCESS) < 0) goto out2;
     RESET_BUF();
     copyloop(t->client.fd, fd, buf, clientname, namebuf, port);
  out2:
@@ -709,22 +704,22 @@ static void* clientthread(void *data) {
     freeaddrinfo(remote);
  out0:
     clientthread_cleanup(t);
-    return nullptr;
+    return NULL;
 }
 
-static void gc_threads() {
-    if (std::atomic_load(&g_gc_pending)) {
+static void gc_threads(void) {
+    if (atomic_load(&g_gc_pending)) {
         {
             if (pthread_mutex_lock(&g_gc_mtx)) perror("mutex_lock");
             while (g_gc_list) {
-                thread *t = g_gc_list;
+                struct thread *t = g_gc_list;
                 g_gc_list = g_gc_list->gc_next;
                 pthread_join(t->pt, 0);
                 free(t);
             }
             if (pthread_mutex_unlock(&g_gc_mtx)) perror("mutex_unlock");
         }
-        std::atomic_store(&g_gc_pending, 0);
+        atomic_store(&g_gc_pending, 0);
     }
 }
 
@@ -758,27 +753,24 @@ static void zero_arg(char *s) {
 
 static void ban_dest_add(int af, const char *addr, uint32_t mask)
 {
-    uint32_t ip4 = 0;
-    struct in6_addr ip6;
-    memset(&ip6, 0, sizeof(struct in6_addr));
+    struct in_addr ip4 = {0};
+    struct in6_addr ip6 = {0};
 
     if (af != AF_INET && af != AF_INET6) return;
-    if (inet_pton(af, addr, af == AF_INET ? reinterpret_cast<char *>(&ip4) : reinterpret_cast<char *>(&ip6)) != 1)
+    if (inet_pton(af, addr, af == AF_INET ? (char *)&ip4 : (char *)&ip6) != 1)
         return;
-    ban_dest = static_cast<bandst *>(reallocarray(ban_dest, nban_dest + 1, sizeof(bandst)));
+    ban_dest = reallocarray(ban_dest, nban_dest + 1, sizeof(struct bandst));
     if (!ban_dest) {
         dprintf(2, "error: reallocarray failed\n");
         exit(EXIT_FAILURE);
     }
-    // XXX: C designated initializer would work better here...
-    bandst tt = { af, ip4, ip6, mask };
-    ban_dest[nban_dest++] = tt;
+    ban_dest[nban_dest++] = (struct bandst){ .fam = af, .addr4 = ip4, .addr6 = ip6, .mask = mask };
 }
 
 int main(int argc, char** argv) {
     bind_addr.v4.sin_family = AF_UNSPEC;
     size_t nsrvrs = 0;
-    server *srvrs = nullptr;
+    struct server *srvrs = NULL;
     int ch;
     unsigned port = 1080;
 
@@ -800,25 +792,25 @@ int main(int argc, char** argv) {
             resolve_sa(optarg, 0, &bind_addr);
             break;
         case 'u':
-            if (g_user_id) free(reinterpret_cast<void *>(const_cast<char *>(g_user_id)));
+            if (g_user_id) free(g_user_id);
             g_user_id = strdup(optarg);
             break;
         case 'C':
-            if (g_chroot) free(reinterpret_cast<void *>(const_cast<char *>(g_chroot)));
+            if (g_chroot) free(g_chroot);
             g_chroot = strdup(optarg);
             break;
         case 'U':
-            if (g_auth_user) free(reinterpret_cast<void *>(const_cast<char *>(g_auth_user)));
+            if (g_auth_user) free(g_auth_user);
             g_auth_user = strdup(optarg);
             zero_arg(optarg);
             break;
         case 'P':
-            if (g_auth_pass) free(reinterpret_cast<void *>(const_cast<char *>(g_auth_pass)));
+            if (g_auth_pass) free(g_auth_pass);
             g_auth_pass = strdup(optarg);
             zero_arg(optarg);
             break;
         case 'i':
-            srvrs = static_cast<server *>(reallocarray(srvrs, nsrvrs + 1, sizeof(server)));
+            srvrs = reallocarray(srvrs, nsrvrs + 1, sizeof(struct server));
             if (!srvrs) {
                 dprintf(2, "error: reallocarray failed\n");
                 return 1;
@@ -840,7 +832,7 @@ int main(int argc, char** argv) {
         }
     }
     if (nsrvrs == 0) {
-        srvrs = static_cast<server *>(reallocarray(srvrs, nsrvrs + 1, sizeof(server)));
+        srvrs = reallocarray(srvrs, nsrvrs + 1, sizeof(struct server));
         if (!srvrs) {
             dprintf(2, "error: reallocarray failed\n");
             return 1;
@@ -892,9 +884,9 @@ int main(int argc, char** argv) {
     if (g_user_id)
         nk_set_uidgid(muonsocks_uid, muonsocks_gid, NULL, 0);
 
-    struct pollfd *fds = static_cast<struct pollfd *>(malloc(nsrvrs * sizeof(struct pollfd)));
+    struct pollfd *fds = malloc(nsrvrs * sizeof(struct pollfd));
     for (size_t i = 0; i < nsrvrs; ++i) {
-        fds[i] = { srvrs[i].fd, POLLIN, 0 };
+        fds[i] = (struct pollfd){ .fd = srvrs[i].fd, .events = POLLIN };
     }
     if (pthread_mutex_init(&g_gc_mtx, NULL) ||
         pthread_mutex_init(&auth_ips_mtx, NULL)) {
@@ -928,7 +920,7 @@ int main(int argc, char** argv) {
                     struct client c;
                     if (server_waitclient(&srvrs[i], &c))
                         break;
-                    thread *ct = static_cast<thread *>(malloc(sizeof(thread)));
+                    struct thread *ct = malloc(sizeof(struct thread));
                     if (!ct) {
                         dprintf(2, "malloc failed\n");
                         break;
