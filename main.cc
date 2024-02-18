@@ -179,8 +179,8 @@ static int resolve_sa(const char *host, unsigned short port, union sockaddr_unio
     int ret;
     SOCKADDR_UNION_AF(res) = AF_UNSPEC;
     if ((ret = resolve(host, port, AF_UNSPEC, &ainfo))) return ret;
-    SCOPE_EXIT { freeaddrinfo(ainfo); };
     memcpy(res, ainfo->ai_addr, ainfo->ai_addrlen);
+    freeaddrinfo(ainfo);
     return 0;
 }
 
@@ -220,7 +220,6 @@ static int server_waitclient(struct server *server, struct client* client) {
 static int server_setup(struct server *server, unsigned short port) {
     struct addrinfo *ainfo = nullptr;
     if (resolve(server->listenip, port, AF_UNSPEC, &ainfo)) return -1;
-    SCOPE_EXIT { freeaddrinfo(ainfo); };
     int listenfd = -1;
     for (auto p = ainfo; p; p = p->ai_next) {
         if ((listenfd = socket(p->ai_family, p->ai_socktype|SOCK_CLOEXEC|SOCK_NONBLOCK, p->ai_protocol)) < 0)
@@ -236,13 +235,17 @@ static int server_setup(struct server *server, unsigned short port) {
         }
         break;
     }
-    if (listenfd < 0) return -2;
-    if (listen(listenfd, SOMAXCONN) < 0) {
+    int ret = 0;
+    if (listenfd < 0) {
+        ret = -2;
+    } else if (listen(listenfd, SOMAXCONN) < 0) {
         close(listenfd);
-        return -3;
+        ret = -3;
+    } else {
+        server->fd = listenfd;
     }
-    server->fd = listenfd;
-    return 0;
+    freeaddrinfo(ainfo);
+    return ret;
 }
 
 static int is_authed(union sockaddr_union *client, union sockaddr_union *authedip) {
