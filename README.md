@@ -16,9 +16,6 @@ changes:
 * Enhanced error handling
 * Correct some minor bugs (signal handling and memory leaks)
 
-It is compiled as C++ rather than C essentially for destructors and the RAII
-idiom.  Exceptions or RTTI are not used, so bloat is minimal.
-
 muonsocks obsoletes nsocks; it is strictly superior aside from having no
 support for UDP over SOCKS which is virtually never used in practice.
 
