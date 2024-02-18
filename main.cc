@@ -42,8 +42,6 @@
 #include <limits.h>
 #include <assert.h>
 #include <atomic>
-#include <mutex>
-#include <shared_mutex>
 #include <utility>
 #include "nk/scopeguard.hpp"
 #include "sockunion.h"
@@ -112,11 +110,11 @@ static size_t nauth_ips;
 static size_t nban_dest;
 static sockaddr_union *auth_ips;
 static bandst *ban_dest;
-static std::shared_mutex auth_ips_mtx;
+static pthread_mutex_t auth_ips_mtx;
 static union sockaddr_union bind_addr;
 
 static std::atomic<bool> g_gc_pending;
-static std::mutex g_gc_mtx;
+static pthread_mutex_t g_gc_mtx;
 static thread *g_gc_list;
 
 enum authmethod : char {
@@ -494,9 +492,10 @@ static void* clientthread(void *data) {
     SCOPE_EXIT {
         close(t->client.fd);
         {
-            std::unique_lock mtx(g_gc_mtx);
+            if (pthread_mutex_lock(&g_gc_mtx)) perror("mutex_lock");
             t->gc_next = g_gc_list;
             g_gc_list = t;
+            if (pthread_mutex_unlock(&g_gc_mtx)) perror("mutex_unlock");
         }
         g_gc_pending = true;
     };
@@ -515,8 +514,9 @@ static void* clientthread(void *data) {
                 } else if (use_auth_ips) {
                     bool authed = 0;
                     {
-                        std::shared_lock mtx(auth_ips_mtx);
+                        if (pthread_mutex_lock(&auth_ips_mtx)) perror("mutex_lock");
                         authed = is_in_authed_list(&t->client.addr);
+                        if (pthread_mutex_unlock(&auth_ips_mtx)) perror("mutex_unlock");
                     }
                     if (authed) {
                         am = AM_NO_AUTH;
@@ -550,9 +550,10 @@ static void* clientthread(void *data) {
             bool allow = !strcmp(user, g_auth_user) && !strcmp(pass, g_auth_pass);
             if (!allow) return nullptr;
             if (use_auth_ips) {
-                std::unique_lock mtx(auth_ips_mtx);
+                if (pthread_mutex_lock(&auth_ips_mtx)) perror("mutex_lock");
                 if (!is_in_authed_list(&t->client.addr))
                     add_auth_ip(&t->client.addr);
+                if (pthread_mutex_unlock(&auth_ips_mtx)) perror("mutex_unlock");
             }
             if (send_auth_response(t->client.fd, 1, am) < 0) return nullptr;
             RESET_BUF();
@@ -717,13 +718,14 @@ static void* clientthread(void *data) {
 static void gc_threads() {
     if (g_gc_pending) {
         {
-            std::unique_lock mtx(g_gc_mtx);
+            if (pthread_mutex_lock(&g_gc_mtx)) perror("mutex_lock");
             while (g_gc_list) {
                 thread *t = g_gc_list;
                 g_gc_list = g_gc_list->gc_next;
                 pthread_join(t->pt, 0);
                 free(t);
             }
+            if (pthread_mutex_unlock(&g_gc_mtx)) perror("mutex_unlock");
         }
         g_gc_pending = false;
     }
@@ -897,6 +899,10 @@ int main(int argc, char** argv) {
     struct pollfd *fds = static_cast<struct pollfd *>(malloc(nsrvrs * sizeof(struct pollfd)));
     for (size_t i = 0; i < nsrvrs; ++i) {
         fds[i] = { srvrs[i].fd, POLLIN, 0 };
+    }
+    if (pthread_mutex_init(&g_gc_mtx, NULL) ||
+        pthread_mutex_init(&auth_ips_mtx, NULL)) {
+        perror("pthread_mutex_init");
     }
 
     if (s6_notify_enable) {
