@@ -43,7 +43,6 @@
 #include <cassert>
 #include <memory>
 #include <vector>
-#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
@@ -93,7 +92,6 @@ struct server {
 struct thread {
     pthread_t pt;
     struct client client;
-    std::atomic<bool> done;
 };
 
 struct bandst {
@@ -117,6 +115,10 @@ static std::vector<sockaddr_union *> auth_ips;
 static std::vector<bandst> ban_dest;
 static std::shared_mutex auth_ips_mtx;
 static union sockaddr_union bind_addr;
+
+static std::atomic<bool> g_gc_pending;
+static std::mutex g_gc_mtx;
+static std::vector<thread *> g_gc_list;
 
 enum authmethod : char {
     AM_NO_AUTH = 0,
@@ -488,7 +490,11 @@ static void* clientthread(void *data) {
 
     SCOPE_EXIT {
         close(t->client.fd);
-        t->done = true;
+        {
+            std::unique_lock mtx(g_gc_mtx);
+            g_gc_list.push_back(t);
+        }
+        g_gc_pending = true;
     };
     EXTEND_BUF();
 
@@ -704,15 +710,18 @@ static void* clientthread(void *data) {
     return nullptr;
 }
 
-static void collect(std::vector<std::unique_ptr<thread>> &threads) {
-threads.erase(std::remove_if(threads.begin(), threads.end(),
-                             [&](std::unique_ptr<thread> &t) -> bool {
-                                if (t->done) {
-                                    pthread_join(t->pt, 0);
-                                    return true;
-                                }
-                                return false;
-                             }), threads.end());
+static void gc_threads() {
+    if (g_gc_pending) {
+        {
+            std::unique_lock mtx(g_gc_mtx);
+            for (auto t: g_gc_list) {
+                pthread_join(t->pt, 0);
+                free(t);
+            }
+            g_gc_list.clear();
+        }
+        g_gc_pending = false;
+    }
 }
 
 static int usage(void) {
@@ -758,7 +767,6 @@ static void ban_dest_add(int af, const char *addr, uint32_t mask)
 int main(int argc, char** argv) {
     bind_addr.v4.sin_family = AF_UNSPEC;
     std::vector<struct server> servers;
-    std::vector<std::unique_ptr<thread>> threads;
     int ch;
     unsigned port = 1080;
 
@@ -879,13 +887,12 @@ int main(int argc, char** argv) {
         close(s6_notify_fd);
     }
     for (;;) {
-        collect(threads);
-poll_again:
+        gc_threads();
         switch (poll(fds.get(), servers.size(), -1)) {
         default: break;
         case -1: if (errno == EINTR || errno == EAGAIN) continue;
                  else perror("poll");
-        case 0:  goto poll_again;
+        case 0:  continue;
         }
         for (size_t i = 0, iend = servers.size(); i < iend; ++i) {
             if (fds[i].revents & POLLIN) {
@@ -893,17 +900,21 @@ poll_again:
                     struct client c;
                     if (server_waitclient(&servers[i], &c))
                         break;
-                    threads.emplace_back(std::make_unique<thread>());
-                    auto ct = threads.back().get();
-                    ct->done = false;
+                    auto ct = static_cast<thread *>(malloc(sizeof(thread)));
+                    if (!ct) {
+                        dprintf(2, "malloc failed\n");
+                        break;
+                    }
                     ct->client = c;
                     pthread_attr_t *a = 0, attr;
                     if (pthread_attr_init(&attr) == 0) {
                         a = &attr;
                         pthread_attr_setstacksize(a, THREAD_STACK_SIZE);
                     }
-                    if (pthread_create(&ct->pt, a, clientthread, ct) != 0)
+                    if (pthread_create(&ct->pt, a, clientthread, ct) != 0) {
                         dprintf(2, "pthread_create failed. OOM?\n");
+                        free(ct);
+                    }
                     if (a) pthread_attr_destroy(&attr);
                 }
             }
