@@ -40,8 +40,7 @@
 #include <netinet/tcp.h>
 #include <errno.h>
 #include <limits.h>
-#include <cassert>
-#include <vector>
+#include <assert.h>
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
@@ -110,8 +109,10 @@ static bool allow_ipv6 = true;
 static bool s6_notify_enable = false;
 static bool use_auth_ips = false;
 static bool g_logging = false;
-static std::vector<sockaddr_union *> auth_ips;
-static std::vector<bandst> ban_dest;
+static size_t nauth_ips;
+static size_t nban_dest;
+static sockaddr_union *auth_ips;
+static bandst *ban_dest;
 static std::shared_mutex auth_ips_mtx;
 static union sockaddr_union bind_addr;
 
@@ -272,14 +273,16 @@ static int is_authed(union sockaddr_union *client, union sockaddr_union *authedi
 }
 
 static int is_in_authed_list(union sockaddr_union *caddr) {
-    for (auto i: auth_ips) {
-        if (is_authed(caddr, i)) return 1;
+    for (size_t i = 0; i < nauth_ips; ++i) {
+        if (is_authed(caddr, &auth_ips[i])) return 1;
     }
     return 0;
 }
 
 static void add_auth_ip(union sockaddr_union *caddr) {
-    auth_ips.push_back(caddr);
+    auth_ips = static_cast<union sockaddr_union *>(reallocarray(auth_ips, nauth_ips + 1, sizeof(union sockaddr_union)));
+    if (!auth_ips) dprintf(2, "error: reallocarray failed\n");
+    memcpy(auth_ips + (nauth_ips++), caddr, sizeof *caddr);
 }
 
 static int send_auth_response(int fd, char version, enum authmethod method) {
@@ -448,17 +451,20 @@ static enum errorcode errno_to_sockscode()
 
 static bool is_banned(int family, const struct addrinfo *remote)
 {
-    for (auto &i: ban_dest) {
-        if (i.fam == family) {
+    for (size_t i = 0; i < nban_dest; ++i) {
+        if (ban_dest[i].fam == family) {
             unsigned char abuf[16], bbuf[16];
             size_t addrsize = family == AF_INET ? 4 : 16;
             auto ai4 = reinterpret_cast<sockaddr_in *>(remote->ai_addr);
             auto ai6 = reinterpret_cast<sockaddr_in6 *>(remote->ai_addr);
-            memcpy(abuf, family == AF_INET ? reinterpret_cast<const void *>(&ai4->sin_addr) : reinterpret_cast<const void *>(&ai6->sin6_addr),
-                         addrsize);
-            memcpy(bbuf, family == AF_INET ? reinterpret_cast<const void *>(&i.addr4) : reinterpret_cast<const void *>(&i.addr6), addrsize);
+            memcpy(abuf, family == AF_INET ? reinterpret_cast<const void *>(&ai4->sin_addr)
+                                           : reinterpret_cast<const void *>(&ai6->sin6_addr),
+                   addrsize);
+            memcpy(bbuf, family == AF_INET ? reinterpret_cast<const void *>(&ban_dest[i].addr4)
+                                           : reinterpret_cast<const void *>(&ban_dest[i].addr6),
+                   addrsize);
             unsigned char *p = abuf, *q = bbuf;
-            uint32_t m = i.mask;
+            uint32_t m = ban_dest[i].mask;
             if (family == AF_INET6 && m > 128) m = 128;
             if (family == AF_INET && m > 32) m = 32;
             for (;m >= 8; ++p, ++q, m -= 8) {
@@ -762,7 +768,14 @@ static void ban_dest_add(int af, const char *addr, uint32_t mask)
     if (af != AF_INET && af != AF_INET6) return;
     if (inet_pton(af, addr, af == AF_INET ? reinterpret_cast<char *>(&ip4) : reinterpret_cast<char *>(&ip6)) != 1)
         return;
-    ban_dest.push_back({ af, ip4, ip6, mask });
+    ban_dest = static_cast<bandst *>(reallocarray(ban_dest, nban_dest + 1, sizeof(bandst)));
+    if (!ban_dest) {
+        dprintf(2, "error: reallocarray failed\n");
+        exit(EXIT_FAILURE);
+    }
+    // XXX: C designated initializer would work better here...
+    bandst tt = { af, ip4, ip6, mask };
+    ban_dest[nban_dest++] = tt;
 }
 
 int main(int argc, char** argv) {
