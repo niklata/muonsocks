@@ -168,7 +168,7 @@ static int resolve(const char *host, unsigned short port, int fam, struct addrin
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
     char port_buf[8];
-    auto sz = snprintf(port_buf, sizeof port_buf, "%u", port);
+    int sz = snprintf(port_buf, sizeof port_buf, "%u", port);
     if (sz < 0 || static_cast<unsigned>(sz) >= sizeof port_buf) return EAI_SYSTEM;
     return getaddrinfo(host, port_buf, &hints, addr);
 }
@@ -187,7 +187,7 @@ static int bindtoip(int fd, union sockaddr_union *bindaddr) {
     socklen_t sz = SOCKADDR_UNION_LENGTH(bindaddr);
     if (!sz) return 0;
 #ifdef __linux__
-    const auto bindport = !!SOCKADDR_UNION_PORT(bindaddr);
+    in_port_t bindport = !!SOCKADDR_UNION_PORT(bindaddr);
     int level = bindport ? SOL_SOCKET : IPPROTO_IP;
     int optname = bindport ? SO_REUSEADDR : IP_BIND_ADDRESS_NO_PORT;
     int flags = 1;
@@ -220,7 +220,7 @@ static int server_setup(struct server *server, unsigned short port) {
     struct addrinfo *ainfo = nullptr;
     if (resolve(server->listenip, port, AF_UNSPEC, &ainfo)) return -1;
     int listenfd = -1;
-    for (auto p = ainfo; p; p = p->ai_next) {
+    for (struct addrinfo *p = ainfo; p; p = p->ai_next) {
         if ((listenfd = socket(p->ai_family, p->ai_socktype|SOCK_CLOEXEC|SOCK_NONBLOCK, p->ai_protocol)) < 0)
             continue;
         int yes = 1;
@@ -251,8 +251,8 @@ static int is_authed(union sockaddr_union *client, union sockaddr_union *authedi
     int af = SOCKADDR_UNION_AF(authedip);
     if (af == SOCKADDR_UNION_AF(client)) {
         size_t cmpbytes = af == AF_INET ? 4 : 16;
-        auto cmp1 = SOCKADDR_UNION_ADDRESS(client);
-        auto cmp2 = SOCKADDR_UNION_ADDRESS(authedip);
+        const void *cmp1 = SOCKADDR_UNION_ADDRESS(client);
+        const void *cmp2 = SOCKADDR_UNION_ADDRESS(authedip);
         if (!memcmp(cmp1, cmp2, cmpbytes)) return 1;
     }
     return 0;
@@ -295,13 +295,13 @@ static int send_error(const client &c, int fd, enum errorcode ec) {
         b[2] = 0;
         if (srcaddr.ss_family == AF_INET) {
             b[3] = 1;
-            const auto sa = reinterpret_cast<sockaddr_in *>(&srcaddr);
+            const sockaddr_in *sa = reinterpret_cast<sockaddr_in *>(&srcaddr);
             memcpy(b + 4, &sa->sin_addr, 4);
             memcpy(b + 8, &sa->sin_port, 2);
             blen = 10;
         } else {
             b[3] = 4;
-            const auto sa = reinterpret_cast<sockaddr_in6 *>(&srcaddr);
+            const sockaddr_in6 *sa = reinterpret_cast<sockaddr_in6 *>(&srcaddr);
             memcpy(b + 4, &sa->sin6_addr, 16);
             memcpy(b + 20, &sa->sin6_port, 2);
             blen = 22;
@@ -314,7 +314,7 @@ static int send_error(const client &c, int fd, enum errorcode ec) {
             // lesser evil is to just lie and report a zero IP.
             memset(&srcaddr, 0, sizeof srcaddr);
         }
-        const auto sa = reinterpret_cast<sockaddr_in *>(&srcaddr);
+        const sockaddr_in *sa = reinterpret_cast<sockaddr_in *>(&srcaddr);
         b[0] = 0;
         b[1] = ec == EC_SUCCESS ? char(0x5a) : char(0x5b);
         memcpy(b + 2, &sa->sin_port, 2);
@@ -397,7 +397,7 @@ read_retry:
 static bool extend_cbuf(const thread *t, char *buf, size_t &buflen)
 {
     for (;;) {
-        auto n = read(t->client.fd, buf + buflen, BUF_SIZE - buflen);
+        ssize_t n = read(t->client.fd, buf + buflen, BUF_SIZE - buflen);
         if (n == 0) {
             return false;
         } else if (n < 0) {
@@ -440,8 +440,8 @@ static bool is_banned(int family, const struct addrinfo *remote)
         if (ban_dest[i].fam == family) {
             unsigned char abuf[16], bbuf[16];
             size_t addrsize = family == AF_INET ? 4 : 16;
-            auto ai4 = reinterpret_cast<sockaddr_in *>(remote->ai_addr);
-            auto ai6 = reinterpret_cast<sockaddr_in6 *>(remote->ai_addr);
+            sockaddr_in *ai4 = reinterpret_cast<sockaddr_in *>(remote->ai_addr);
+            sockaddr_in6 *ai6 = reinterpret_cast<sockaddr_in6 *>(remote->ai_addr);
             memcpy(abuf, family == AF_INET ? reinterpret_cast<const void *>(&ai4->sin_addr)
                                            : reinterpret_cast<const void *>(&ai6->sin6_addr),
                    addrsize);
@@ -481,7 +481,7 @@ static void clientthread_cleanup(thread *t)
 }
 
 static void* clientthread(void *data) {
-    auto t = static_cast<thread *>(data);
+    thread *t = static_cast<thread *>(data);
     char buf[BUF_SIZE];
     char namebuf[256];
     char clientname[256] = { 0 };
@@ -904,7 +904,7 @@ int main(int argc, char** argv) {
     if (s6_notify_enable) {
         char buf = '\n';
         for (;;) {
-            auto r = write(s6_notify_fd, &buf, 1);
+            ssize_t r = write(s6_notify_fd, &buf, 1);
             if (r < 1) {
                 if (r == -1 && errno == EINTR) continue;
                 dprintf(2, "s6_notify: write failed: %s", strerror(errno));
@@ -928,7 +928,7 @@ int main(int argc, char** argv) {
                     struct client c;
                     if (server_waitclient(&srvrs[i], &c))
                         break;
-                    auto ct = static_cast<thread *>(malloc(sizeof(thread)));
+                    thread *ct = static_cast<thread *>(malloc(sizeof(thread)));
                     if (!ct) {
                         dprintf(2, "malloc failed\n");
                         break;
