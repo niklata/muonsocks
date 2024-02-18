@@ -223,24 +223,13 @@ static int server_setup(struct server *server, unsigned short port) {
     SCOPE_EXIT { freeaddrinfo(ainfo); };
     int listenfd = -1;
     for (auto p = ainfo; p; p = p->ai_next) {
-        if ((listenfd = socket(p->ai_family, p->ai_socktype|SOCK_CLOEXEC, p->ai_protocol)) < 0)
+        if ((listenfd = socket(p->ai_family, p->ai_socktype|SOCK_CLOEXEC|SOCK_NONBLOCK, p->ai_protocol)) < 0)
             continue;
         int yes = 1;
         if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes) < 0) {
             dprintf(2, "failed to set SO_REUSEADDR on listen socket\n");
         }
         if (bind(listenfd, p->ai_addr, p->ai_addrlen) < 0) {
-            close(listenfd);
-            listenfd = -1;
-            continue;
-        }
-        int flags = fcntl(listenfd, F_GETFL);
-        if (flags < 0) {
-            close(listenfd);
-            listenfd = -1;
-            continue;
-        }
-        if (fcntl(listenfd, F_SETFL, flags | O_NONBLOCK) < 0) {
             close(listenfd);
             listenfd = -1;
             continue;
