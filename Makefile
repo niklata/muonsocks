@@ -10,8 +10,6 @@ CXX_SRCS =  $(sort main.cc)
 OBJS = $(C_SRCS:.c=.o) $(CXX_SRCS:.cc=.o)
 DEPS = $(C_SRCS:.c=.d) $(CXX_SRCS:.cc=.d)
 
-LIBS = -lpthread
-
 CFLAGS = -MMD -O2 -s -std=c17 -I. -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -Wstrict-overflow=5 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
 CXXFLAGS = -MMD -O2 -s -std=gnu++20 -fno-rtti -fno-exceptions -I. -Wall -pedantic -Wextra -Wformat=2 -Wformat-nonliteral -Wformat-security -Wstrict-overflow=5 -Wold-style-cast -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_GNU_SOURCE
 CPPFLAGS += $(INC)
@@ -25,7 +23,7 @@ CPPFLAGS += $(INC)
 all: $(PROG)
 
 $(PROG): $(OBJS)
-	$(CXX) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -nodefaultlibs -lgcc -lc -lpthread -o $@ $^
 
 -include $(DEPS)
 
