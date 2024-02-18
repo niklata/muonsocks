@@ -871,8 +871,9 @@ int main(int argc, char** argv) {
      */
     (void) gethostbyname("fail.invalid");
 
-    uid_t muonsocks_uid;
-    gid_t muonsocks_gid;
+    // Only initialized to silence spurious warnings.
+    uid_t muonsocks_uid = getuid();
+    gid_t muonsocks_gid = getgid();
     if (g_user_id) {
         if (nk_uidgidbyname(g_user_id, &muonsocks_uid, &muonsocks_gid)) {
             dprintf(2, "invalid user '%s' specified\n", g_user_id);
