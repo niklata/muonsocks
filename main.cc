@@ -44,7 +44,6 @@
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
-#include <charconv>
 #include <utility>
 #include "nk/scopeguard.hpp"
 #include "sockunion.h"
@@ -173,9 +172,8 @@ static int resolve(const char *host, unsigned short port, int fam, struct addrin
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
     char port_buf[8];
-    auto r = std::to_chars(port_buf, port_buf + sizeof port_buf, port);
-    if (r.ec != std::errc()) return EAI_SYSTEM;
-    *r.ptr = 0;
+    auto sz = snprintf(port_buf, sizeof port_buf, "%u", port);
+    if (sz < 0 || static_cast<unsigned>(sz) >= sizeof port_buf) return EAI_SYSTEM;
     return getaddrinfo(host, port_buf, &hints, addr);
 }
 
