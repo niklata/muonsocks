@@ -372,10 +372,9 @@ read_retry:
             switch (errno) {
             case EINTR: goto read_retry;
             case EAGAIN: continue;
-            default: {
+            default:
                 log_dc(fd1, clientname, namebuf, port, bsent, brecv);
                 return;
-            }
             }
         }
         if (infd == fd1) bsent += n;
@@ -860,7 +859,6 @@ int main(int argc, char** argv) {
             perror("server_setup");
             return 1;
         }
-
     }
 
     /* This is tricky -- we *must* use a name that will not be in hosts,
