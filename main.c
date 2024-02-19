@@ -710,16 +710,14 @@ static void* clientthread(void *data) {
 
 static void gc_threads(void) {
     if (atomic_load(&g_gc_pending)) {
-        {
-            if (pthread_mutex_lock(&g_gc_mtx)) perror("mutex_lock");
-            while (g_gc_list) {
-                struct thread *t = g_gc_list;
-                g_gc_list = g_gc_list->gc_next;
-                pthread_join(t->pt, 0);
-                free(t);
-            }
-            if (pthread_mutex_unlock(&g_gc_mtx)) perror("mutex_unlock");
+        if (pthread_mutex_lock(&g_gc_mtx)) perror("mutex_lock");
+        while (g_gc_list) {
+            struct thread *t = g_gc_list;
+            g_gc_list = g_gc_list->gc_next;
+            pthread_join(t->pt, 0);
+            free(t);
         }
+        if (pthread_mutex_unlock(&g_gc_mtx)) perror("mutex_unlock");
         atomic_store(&g_gc_pending, 0);
     }
 }
