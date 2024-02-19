@@ -907,7 +907,7 @@ int main(int argc, char** argv) {
             ssize_t r = write(s6_notify_fd, &buf, 1);
             if (r < 1) {
                 if (r == -1 && errno == EINTR) continue;
-                dprintf(2, "s6_notify: write failed: %s", strerror(errno));
+                dprintf(2, "s6_notify: write failed: %s\n", strerror(errno));
                 exit(EXIT_FAILURE);
             }
             break;
