@@ -70,6 +70,9 @@
 #define BUF_SIZE 4320
 #define MAX_BATCH 29
 
+// Number of unused struct thread to keep alloced for reuse.
+#define MAX_FREELIST 50
+
 struct client {
     union sockaddr_union addr;
     int fd;
@@ -114,6 +117,8 @@ static union sockaddr_union bind_addr;
 static atomic_int g_gc_pending;
 static pthread_mutex_t g_gc_mtx;
 static struct thread *g_gc_list;
+static struct thread *g_gc_freelist;
+static size_t g_nfreelist;
 
 enum authmethod {
     AM_NO_AUTH = 0,
@@ -717,7 +722,13 @@ static void gc_threads(void) {
             struct thread *t = g_gc_list;
             g_gc_list = g_gc_list->gc_next;
             pthread_join(t->pt, 0);
-            free(t);
+            if (g_nfreelist < MAX_FREELIST) {
+                ++g_nfreelist;
+                t->gc_next = g_gc_freelist;
+                g_gc_freelist = t;
+            } else {
+                free(t);
+            }
         }
         if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
         atomic_store(&g_gc_pending, 0);
@@ -929,11 +940,23 @@ int main(int argc, char** argv) {
                     struct client c;
                     if (server_waitclient(&srvrs[i], &c))
                         break;
-                    struct thread *ct = malloc(sizeof(struct thread));
-                    if (!ct) {
-                        dprintf(2, "malloc failed\n");
-                        break;
+
+                    struct thread *ct;
+                    if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
+                    if (g_nfreelist > 0) {
+                        --g_nfreelist;
+                        ct = g_gc_freelist;
+                        g_gc_freelist = g_gc_freelist->gc_next;
+                        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
+                    } else {
+                        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
+                        ct = malloc(sizeof(struct thread));
+                        if (UNLIKELY(!ct)) {
+                            dprintf(2, "malloc failed\n");
+                            break;
+                        }
                     }
+
                     ct->client = c;
                     pthread_attr_t *a = 0, attr;
                     if (pthread_attr_init(&attr) == 0) {
