@@ -49,7 +49,11 @@
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define UNLIKELY(x) (x)
+#endif
 
 #ifdef PTHREAD_STACK_MIN
 #define THREAD_STACK_SIZE MAX(8*1024, PTHREAD_STACK_MIN)
@@ -964,6 +968,7 @@ int main(int argc, char** argv) {
         close(s6_notify_fd);
     }
     for (;;) {
+        bool printed_err = false;
         gc_threads();
         switch (poll(fds, nsrvrs, -1)) {
         default: break;
@@ -982,8 +987,7 @@ int main(int argc, char** argv) {
                     int r = server_waitclient(&srvrs[i], &c);
                     if (r) {
                         if (r == -1) break;
-                        delay10ms();
-                        continue;
+                        goto oom0;
                     }
 
                     struct thread *ct;
@@ -996,10 +1000,7 @@ int main(int argc, char** argv) {
                     } else {
                         if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
                         ct = malloc(sizeof(struct thread));
-                        if (UNLIKELY(!ct)) {
-                            dprintf(2, "malloc failed\n");
-                            break;
-                        }
+                        if (UNLIKELY(!ct)) goto oom1;
                     }
 
                     ct->client = c;
@@ -1008,13 +1009,20 @@ int main(int argc, char** argv) {
                         a = &attr;
                         pthread_attr_setstacksize(a, THREAD_STACK_SIZE);
                     }
-                    if (UNLIKELY(pthread_create(&ct->pt, a, clientthread, ct) != 0)) {
-                        dprintf(2, "pthread_create failed. OOM?\n");
-                        free_struct_thread(ct);
-                        if (a) pthread_attr_destroy(&attr);
-                        break;
-                    }
+                    r = pthread_create(&ct->pt, a, clientthread, ct);
                     if (a) pthread_attr_destroy(&attr);
+                    if (UNLIKELY(r)) {
+                        free_struct_thread(ct);
+oom1:
+                        close(ct->client.fd);
+oom0:
+                        if (!printed_err) {
+                            printed_err = true;
+                            dprintf(2, "FD limit or OOM: connection dropped\n");
+                        }
+                        delay10ms();
+                        continue;
+                    }
                 }
             }
         }
