@@ -202,22 +202,73 @@ static int bindtoip(int fd, union sockaddr_union *bindaddr) {
     return bind(fd, (struct sockaddr *)bindaddr, sz);
 }
 
-static int server_waitclient(struct server *server, struct client* client) {
-    socklen_t clen = sizeof client->addr;
+static void free_struct_thread(struct thread *t)
+{
+    if (g_nfreelist < MAX_FREELIST) {
+        ++g_nfreelist;
+        t->gc_next = g_gc_freelist;
+        g_gc_freelist = t;
+    } else {
+        free(t);
+    }
+}
+
+static void gc_threads(void) {
+    if (atomic_load(&g_gc_pending)) {
+        if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
+        while (g_gc_list) {
+            struct thread *t = g_gc_list;
+            g_gc_list = g_gc_list->gc_next;
+            pthread_join(t->pt, 0);
+            free_struct_thread(t);
+        }
+        atomic_store(&g_gc_pending, 0);
+        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
+    }
+}
+
+static int server_waitclient(struct server *server, struct client* client)
+{
+    socklen_t clen;
+retry:
+    clen = sizeof client->addr;
 #ifndef __linux__
     client->fd = accept(server->fd, (struct sockaddr *)&client->addr, &clen);
 #else
     client->fd = accept4(server->fd, (struct sockaddr *)&client->addr, &clen, SOCK_CLOEXEC);
 #endif
     if (client->fd == -1) {
-        usleep(1000); // Prevent busy-spin when fd limit is reached
-        return -1;
+        switch (errno) {
+        case EINTR: goto retry;
+        case EMFILE:
+        case ENFILE:
+        case ENOBUFS:
+        case ENOMEM:
+            // Resource limit reached errors.
+            return -2;
+        default:
+            return -1;
+        }
     }
     int flags = 1;
     if (setsockopt(client->fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0) {
         dprintf(2, "failed to set TCP_NODELAY on client socket\n");
     }
     return 0;
+}
+
+static void delay10ms(void)
+{
+    // Prevent busy-spin when fd limit is reached
+    struct timespec rem, tw = { .tv_nsec = 10000000 }; // 10ms
+ns_again:
+    if (nanosleep(&tw, &rem)) {
+        if (errno == EINTR) {
+            tw = rem;
+            goto ns_again;
+        }
+        abort();
+    }
 }
 
 static int server_setup(struct server *server, unsigned short port) {
@@ -711,26 +762,6 @@ static void* clientthread(void *data) {
     return NULL;
 }
 
-static void gc_threads(void) {
-    if (atomic_load(&g_gc_pending)) {
-        if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
-        while (g_gc_list) {
-            struct thread *t = g_gc_list;
-            g_gc_list = g_gc_list->gc_next;
-            pthread_join(t->pt, 0);
-            if (g_nfreelist < MAX_FREELIST) {
-                ++g_nfreelist;
-                t->gc_next = g_gc_freelist;
-                g_gc_freelist = t;
-            } else {
-                free(t);
-            }
-        }
-        atomic_store(&g_gc_pending, 0);
-        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
-    }
-}
-
 static int usage(void) {
     dprintf(2,
             "muonsocks SOCKS 4 and 5 Server\n"
@@ -934,9 +965,16 @@ int main(int argc, char** argv) {
             if (fds[i].revents & POLLIN) {
                 for (;;) {
                     gc_threads();
+
+                    // This optimizes for less mutex contention at the cost of
+                    // dropping a connection on malloc failure below.
                     struct client c;
-                    if (server_waitclient(&srvrs[i], &c))
-                        break;
+                    int r = server_waitclient(&srvrs[i], &c);
+                    if (r) {
+                        if (r == -1) break;
+                        delay10ms();
+                        continue;
+                    }
 
                     struct thread *ct;
                     if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
@@ -962,7 +1000,9 @@ int main(int argc, char** argv) {
                     }
                     if (UNLIKELY(pthread_create(&ct->pt, a, clientthread, ct) != 0)) {
                         dprintf(2, "pthread_create failed. OOM?\n");
-                        free(ct);
+                        free_struct_thread(ct);
+                        if (a) pthread_attr_destroy(&attr);
+                        break;
                     }
                     if (a) pthread_attr_destroy(&attr);
                 }
