@@ -505,11 +505,9 @@ static void* clientthread(void *data) {
                     break;
                 } else if (use_auth_ips) {
                     bool authed = 0;
-                    {
-                        if (UNLIKELY(pthread_mutex_lock(&auth_ips_mtx))) abort();
-                        authed = is_in_authed_list(&t->client.addr);
-                        if (UNLIKELY(pthread_mutex_unlock(&auth_ips_mtx))) abort();
-                    }
+                    if (UNLIKELY(pthread_mutex_lock(&auth_ips_mtx))) abort();
+                    authed = is_in_authed_list(&t->client.addr);
+                    if (UNLIKELY(pthread_mutex_unlock(&auth_ips_mtx))) abort();
                     if (authed) {
                         am = AM_NO_AUTH;
                         break;
