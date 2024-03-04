@@ -239,6 +239,16 @@ retry:
 #endif
     if (client->fd == -1) {
         switch (errno) {
+#ifdef __linux__
+        case ENETDOWN:
+        case EPROTO:
+        case ENOPROTOOPT:
+        case EHOSTDOWN:
+        case ENONET:
+        case EHOSTUNREACH:
+        case EOPNOTSUPP:
+        case ENETUNREACH:
+#endif
         case EINTR: goto retry;
         case EMFILE:
         case ENFILE:
