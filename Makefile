@@ -20,7 +20,7 @@ CPPFLAGS += $(INC)
 all: $(PROG)
 
 $(PROG): $(OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -nodefaultlibs -lgcc -lc -lpthread -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) -lpthread -o $@ $^
 
 -include $(DEPS)
 
