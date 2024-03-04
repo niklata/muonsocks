@@ -474,13 +474,11 @@ static bool is_banned(int family, const struct addrinfo *remote)
 static void clientthread_cleanup(struct thread *t)
 {
     close(t->client.fd);
-    {
-        if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
-        t->gc_next = g_gc_list;
-        g_gc_list = t;
-        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
-    }
+    if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
     atomic_store(&g_gc_pending, 1);
+    t->gc_next = g_gc_list;
+    g_gc_list = t;
+    if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
 }
 
 static void* clientthread(void *data) {
@@ -730,8 +728,8 @@ static void gc_threads(void) {
                 free(t);
             }
         }
-        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
         atomic_store(&g_gc_pending, 0);
+        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
     }
 }
 
