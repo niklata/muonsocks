@@ -49,6 +49,8 @@
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #endif
 
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+
 #ifdef PTHREAD_STACK_MIN
 #define THREAD_STACK_SIZE MAX(8*1024, PTHREAD_STACK_MIN)
 #else
@@ -468,10 +470,10 @@ static void clientthread_cleanup(struct thread *t)
 {
     close(t->client.fd);
     {
-        if (pthread_mutex_lock(&g_gc_mtx)) abort();
+        if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
         t->gc_next = g_gc_list;
         g_gc_list = t;
-        if (pthread_mutex_unlock(&g_gc_mtx)) abort();
+        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
     }
     atomic_store(&g_gc_pending, 1);
 }
@@ -501,9 +503,9 @@ static void* clientthread(void *data) {
                 } else if (use_auth_ips) {
                     bool authed = 0;
                     {
-                        if (pthread_mutex_lock(&auth_ips_mtx)) abort();
+                        if (UNLIKELY(pthread_mutex_lock(&auth_ips_mtx))) abort();
                         authed = is_in_authed_list(&t->client.addr);
-                        if (pthread_mutex_unlock(&auth_ips_mtx)) abort();
+                        if (UNLIKELY(pthread_mutex_unlock(&auth_ips_mtx))) abort();
                     }
                     if (authed) {
                         am = AM_NO_AUTH;
@@ -537,10 +539,10 @@ static void* clientthread(void *data) {
             bool allow = !strcmp(user, g_auth_user) && !strcmp(pass, g_auth_pass);
             if (!allow) goto out0;
             if (use_auth_ips) {
-                if (pthread_mutex_lock(&auth_ips_mtx)) abort();
+                if (UNLIKELY(pthread_mutex_lock(&auth_ips_mtx))) abort();
                 if (!is_in_authed_list(&t->client.addr))
                     add_auth_ip(&t->client.addr);
-                if (pthread_mutex_unlock(&auth_ips_mtx)) abort();
+                if (UNLIKELY(pthread_mutex_unlock(&auth_ips_mtx))) abort();
             }
             if (send_auth_response(t->client.fd, 1, am) < 0) goto out0;
             RESET_BUF();
@@ -710,14 +712,14 @@ static void* clientthread(void *data) {
 
 static void gc_threads(void) {
     if (atomic_load(&g_gc_pending)) {
-        if (pthread_mutex_lock(&g_gc_mtx)) abort();
+        if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
         while (g_gc_list) {
             struct thread *t = g_gc_list;
             g_gc_list = g_gc_list->gc_next;
             pthread_join(t->pt, 0);
             free(t);
         }
-        if (pthread_mutex_unlock(&g_gc_mtx)) abort();
+        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
         atomic_store(&g_gc_pending, 0);
     }
 }
@@ -894,8 +896,8 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < nsrvrs; ++i) {
         fds[i] = (struct pollfd){ .fd = srvrs[i].fd, .events = POLLIN };
     }
-    if (pthread_mutex_init(&g_gc_mtx, NULL) ||
-        pthread_mutex_init(&auth_ips_mtx, NULL)) {
+    if (UNLIKELY(pthread_mutex_init(&g_gc_mtx, NULL) ||
+        pthread_mutex_init(&auth_ips_mtx, NULL))) {
         perror("pthread_mutex_init");
         return 1;
     }
@@ -938,7 +940,7 @@ int main(int argc, char** argv) {
                         a = &attr;
                         pthread_attr_setstacksize(a, THREAD_STACK_SIZE);
                     }
-                    if (pthread_create(&ct->pt, a, clientthread, ct) != 0) {
+                    if (UNLIKELY(pthread_create(&ct->pt, a, clientthread, ct) != 0)) {
                         dprintf(2, "pthread_create failed. OOM?\n");
                         free(ct);
                     }
