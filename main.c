@@ -935,6 +935,7 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < nsrvrs; ++i) {
             if (fds[i].revents & POLLIN) {
                 for (;;) {
+                    gc_threads();
                     struct client c;
                     if (server_waitclient(&srvrs[i], &c))
                         break;
