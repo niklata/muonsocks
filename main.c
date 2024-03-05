@@ -1026,9 +1026,11 @@ int main(int argc, char** argv) {
                     r = pthread_create(&ct->pt, a, clientthread, ct);
                     if (a) pthread_attr_destroy(&attr);
                     if (UNLIKELY(r)) {
+                        if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
                         free_struct_thread(ct);
+                        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
 oom1:
-                        close(ct->client.fd);
+                        close(c.fd);
 oom0:
                         if (!printed_err) {
                             printed_err = true;
