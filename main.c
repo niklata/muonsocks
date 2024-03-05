@@ -981,6 +981,14 @@ int main(int argc, char** argv) {
         }
         close(s6_notify_fd);
     }
+
+    pthread_attr_t attr;
+    if (pthread_attr_init(&attr)) abort();
+    if (pthread_attr_setstacksize(&attr, THREAD_STACK_SIZE)) {
+        dprintf(2, "pthread_attr_setstacksize failed\n");
+        abort();
+    }
+
     for (;;) {
         bool printed_err = false;
         gc_threads();
@@ -1018,13 +1026,7 @@ int main(int argc, char** argv) {
                     }
 
                     ct->client = c;
-                    pthread_attr_t *a = 0, attr;
-                    if (pthread_attr_init(&attr) == 0) {
-                        a = &attr;
-                        pthread_attr_setstacksize(a, THREAD_STACK_SIZE);
-                    }
-                    r = pthread_create(&ct->pt, a, clientthread, ct);
-                    if (a) pthread_attr_destroy(&attr);
+                    r = pthread_create(&ct->pt, &attr, clientthread, ct);
                     if (UNLIKELY(r)) {
                         if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
                         free_struct_thread(ct);
@@ -1043,4 +1045,5 @@ oom0:
             }
         }
     }
+    pthread_attr_destroy(&attr);
 }
