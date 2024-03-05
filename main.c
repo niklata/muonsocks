@@ -350,7 +350,7 @@ static int is_in_authed_list(union sockaddr_union *caddr) {
 
 static void add_auth_ip(union sockaddr_union *caddr) {
     auth_ips = reallocarray(auth_ips, nauth_ips + 1, sizeof(union sockaddr_union));
-    if (!auth_ips) dprintf(2, "error: reallocarray failed\n");
+    if (!auth_ips) perror("reallocarray");
     memcpy(auth_ips + (nauth_ips++), caddr, sizeof *caddr);
 }
 
@@ -828,7 +828,7 @@ static void ban_dest_add(int af, const char *addr, uint32_t mask)
         return;
     ban_dest = reallocarray(ban_dest, nban_dest + 1, sizeof(struct bandst));
     if (!ban_dest) {
-        dprintf(2, "error: reallocarray failed\n");
+        perror("reallocarray");
         exit(EXIT_FAILURE);
     }
     ban_dest[nban_dest++] = (struct bandst){ .fam = af, .addr4 = ip4, .addr6 = ip6, .mask = mask };
@@ -879,7 +879,7 @@ int main(int argc, char** argv) {
         case 'i':
             srvrs = reallocarray(srvrs, nsrvrs + 1, sizeof(struct server));
             if (!srvrs) {
-                dprintf(2, "error: reallocarray failed\n");
+                perror("reallocarray");
                 return 1;
             }
             srvrs[nsrvrs++].listenip = optarg;
@@ -907,7 +907,7 @@ int main(int argc, char** argv) {
     if (nsrvrs == 0) {
         srvrs = reallocarray(srvrs, nsrvrs + 1, sizeof(struct server));
         if (!srvrs) {
-            dprintf(2, "error: reallocarray failed\n");
+            perror("reallocarray");
             return 1;
         }
         srvrs[nsrvrs++].listenip = "0.0.0.0";
@@ -968,25 +968,25 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    pthread_attr_t attr;
+    if (pthread_attr_init(&attr)) abort();
+    if (pthread_attr_setstacksize(&attr, THREAD_STACK_SIZE)) {
+        perror("pthread_attr_setstacksize");
+        return 1;
+    }
+
     if (s6_notify_enable) {
         char buf = '\n';
         for (;;) {
             ssize_t r = write(s6_notify_fd, &buf, 1);
             if (r < 1) {
                 if (r == -1 && errno == EINTR) continue;
-                dprintf(2, "s6_notify: write failed: %s\n", strerror(errno));
-                exit(EXIT_FAILURE);
+                perror("s6_notify/write");
+                return 1;
             }
             break;
         }
         close(s6_notify_fd);
-    }
-
-    pthread_attr_t attr;
-    if (pthread_attr_init(&attr)) abort();
-    if (pthread_attr_setstacksize(&attr, THREAD_STACK_SIZE)) {
-        dprintf(2, "pthread_attr_setstacksize failed\n");
-        abort();
     }
 
     for (;;) {
