@@ -69,6 +69,10 @@
 #define THREAD_STACK_SIZE 32*1024
 #endif
 
+#if (defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFlyBSD__))
+#define USE_ACCEPT4
+#endif
+
 // BUF_SIZE is set to a multiple of a typical 1500 MTU
 // minus options-free IPv6 (40) and TCP (20) headers
 #define BUF_SIZE 4320
@@ -194,13 +198,17 @@ static int resolve_sa(const char *host, unsigned short port, union sockaddr_unio
 static int bindtoip(int fd, union sockaddr_union *bindaddr) {
     socklen_t sz = SOCKADDR_UNION_LENGTH(bindaddr);
     if (!sz) return 0;
-#ifdef __linux__
+    int flags = 1;
     in_port_t bindport = !!SOCKADDR_UNION_PORT(bindaddr);
+#ifdef __linux__
     int level = bindport ? SOL_SOCKET : IPPROTO_IP;
     int optname = bindport ? SO_REUSEADDR : IP_BIND_ADDRESS_NO_PORT;
-    int flags = 1;
-    if (setsockopt(fd, level, optname, &flags, sizeof flags) < 0) {
+    if (setsockopt(fd, level, optname, &flags, sizeof flags) < 0)
         dprintf(2, "failed to set %s on client socket\n", bindport ? "SO_REUSEADDR" : "IP_BIND_ADDRESS_NO_PORT");
+#else
+    if (bindport) {
+        if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &flags, sizeof flags) < 0)
+            dprintf(2, "failed to set SO_REUSEADDR on client socket\n");
     }
 #endif
     return bind(fd, (struct sockaddr *)bindaddr, sz);
@@ -236,10 +244,10 @@ static int server_waitclient(struct server *server, struct client* client)
     socklen_t clen;
 retry:
     clen = sizeof client->addr;
-#ifndef __linux__
-    client->fd = accept(server->fd, (struct sockaddr *)&client->addr, &clen);
-#else
+#ifdef USE_ACCEPT4
     client->fd = accept4(server->fd, (struct sockaddr *)&client->addr, &clen, SOCK_CLOEXEC);
+#else
+    client->fd = accept(server->fd, (struct sockaddr *)&client->addr, &clen);
 #endif
     if (client->fd == -1) {
         switch (errno) {
@@ -265,9 +273,15 @@ retry:
         }
     }
     int flags = 1;
-    if (setsockopt(client->fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0) {
+#ifndef USE_ACCEPT4
+    flags = fcntl(client->fd, F_GETFL);
+    if (fcntl(client->fd, F_SETFL, flags & ~O_NONBLOCK) == -1)
+        dprintf(2, "failed to set O_NONBLOCK on client socket\n");
+    if (fcntl(client->fd, F_SETFD, FD_CLOEXEC) == -1)
+        dprintf(2, "failed to set CLOEXEC on client socket\n");
+#endif
+    if (setsockopt(client->fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)
         dprintf(2, "failed to set TCP_NODELAY on client socket\n");
-    }
     return 0;
 }
 
