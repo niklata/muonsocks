@@ -126,7 +126,7 @@ static atomic_int g_gc_pending;
 static pthread_mutex_t g_gc_mtx;
 static struct thread *g_gc_list;
 // These are only ever accessed on the main listening thread.
-static struct thread *g_gc_freelist;
+static struct thread *g_freelist;
 static size_t g_nfreelist;
 
 enum authmethod {
@@ -219,8 +219,8 @@ static void free_struct_thread(struct thread *t)
 {
     if (g_nfreelist < MAX_FREELIST) {
         ++g_nfreelist;
-        t->gc_next = g_gc_freelist;
-        g_gc_freelist = t;
+        t->gc_next = g_freelist;
+        g_freelist = t;
     } else {
         free(t);
     }
@@ -228,15 +228,20 @@ static void free_struct_thread(struct thread *t)
 
 static void gc_threads(void) {
     if (atomic_load(&g_gc_pending)) {
+        struct thread *local_list;
+
         if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
-        while (g_gc_list) {
-            struct thread *t = g_gc_list;
-            g_gc_list = g_gc_list->gc_next;
+        local_list = g_gc_list;
+        g_gc_list = NULL;
+        atomic_store(&g_gc_pending, 0);
+        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
+
+        while (local_list) {
+            struct thread *t = local_list;
+            local_list = local_list->gc_next;
             pthread_join(t->pt, 0);
             free_struct_thread(t);
         }
-        atomic_store(&g_gc_pending, 0);
-        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
     }
 }
 
@@ -1016,8 +1021,8 @@ int main(int argc, char** argv) {
                     struct thread *ct;
                     if (g_nfreelist > 0) {
                         --g_nfreelist;
-                        ct = g_gc_freelist;
-                        g_gc_freelist = g_gc_freelist->gc_next;
+                        ct = g_freelist;
+                        g_freelist = g_freelist->gc_next;
                     } else {
                         ct = malloc(sizeof(struct thread));
                         if (UNLIKELY(!ct)) goto oom1;
