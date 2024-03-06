@@ -157,10 +157,11 @@ static struct addrinfo* addr_choose(struct addrinfo *list, union sockaddr_union 
 }
 
 static int resolve(const char *host, unsigned short port, int fam, struct addrinfo** addr) {
-    struct addrinfo hints = {0};
-    hints.ai_family = fam;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
+    struct addrinfo hints = {
+        .ai_family = fam,
+        .ai_socktype = SOCK_STREAM,
+        .ai_flags = AI_PASSIVE,
+    };
     char port_buf[8];
     int sz = snprintf(port_buf, sizeof port_buf, "%u", port);
     if (sz < 0 || (size_t)sz >= sizeof port_buf) return EAI_SYSTEM;
@@ -345,8 +346,7 @@ static int send_auth_response(int fd, char version, enum authmethod method) {
 }
 
 static int send_error(const struct client *c, int fd, enum errorcode ec) {
-    struct sockaddr_storage srcaddr = {0};
-    srcaddr.ss_family = AF_INET; // for non-EC_SUCCESS case
+    struct sockaddr_storage srcaddr = { .ss_family = AF_INET }; // for non-EC_SUCCESS case
     if (ec == EC_SUCCESS) {
         socklen_t srcaddrlen = sizeof srcaddr;
         if (getsockname(fd, (struct sockaddr *)&srcaddr, &srcaddrlen) == -1) return -1;
