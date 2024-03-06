@@ -1,29 +1,12 @@
 /*
-   muonsocks - multithreaded, small, efficient SOCKS5 server.
+   muonsocks - multithreaded, small, efficient SOCKS(5|4a) server.
 
    Copyright (C) 2017 rofl0r.
-   Copyright 2020-2022 Nicholas J. Kain
+   Copyright 2020-2024 Nicholas J. Kain
 
    SPDX-License-Identifier: MIT
 
-   This program is derived from rofl0r's excellent microsocks:
-
-   This is the successor of "rocksocks5", and it was written with
-   different goals in mind:
-
-   - prefer usage of standard libc functions over homegrown ones
-   - no artificial limits
-   - do not aim for minimal binary size, but for minimal source code size,
-     and maximal readability, reusability, and extensibility.
-
-   as a result of that, ipv4, dns, and ipv6 is supported out of the box
-   and can use the same code, while rocksocks5 has several compile time
-   defines to bring down the size of the resulting binary to extreme values
-   like 10 KB static linked when only ipv4 support is enabled.
-
-   still, if optimized for size, *this* program when static linked against musl
-   libc is not even 50 KB. that's easily usable even on the cheapest routers.
-
+   This program is derived from rofl0r's excellent microsocks.
 */
 
 #include <unistd.h>
