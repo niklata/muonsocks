@@ -999,7 +999,7 @@ int main(int argc, char** argv) {
                 for (;;) {
                     gc_threads();
 
-                    // This optimizes for less mutex contention at the cost of
+                    // This optimizes for the common break case at the cost of
                     // dropping a connection on malloc failure below.
                     struct client c;
                     int r = server_waitclient(&srvrs[i], &c);
