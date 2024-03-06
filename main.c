@@ -125,6 +125,7 @@ static union sockaddr_union bind_addr;
 static atomic_int g_gc_pending;
 static pthread_mutex_t g_gc_mtx;
 static struct thread *g_gc_list;
+// These are only ever accessed on the main listening thread.
 static struct thread *g_gc_freelist;
 static size_t g_nfreelist;
 
@@ -1013,14 +1014,11 @@ int main(int argc, char** argv) {
                     }
 
                     struct thread *ct;
-                    if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
                     if (g_nfreelist > 0) {
                         --g_nfreelist;
                         ct = g_gc_freelist;
                         g_gc_freelist = g_gc_freelist->gc_next;
-                        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
                     } else {
-                        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
                         ct = malloc(sizeof(struct thread));
                         if (UNLIKELY(!ct)) goto oom1;
                     }
@@ -1028,9 +1026,7 @@ int main(int argc, char** argv) {
                     ct->client = c;
                     r = pthread_create(&ct->pt, &attr, clientthread, ct);
                     if (UNLIKELY(r)) {
-                        if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
                         free_struct_thread(ct);
-                        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
 oom1:
                         close(c.fd);
 oom0:
