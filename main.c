@@ -122,9 +122,7 @@ static struct bandst *ban_dest;
 static pthread_mutex_t auth_ips_mtx;
 static union sockaddr_union bind_addr;
 
-static atomic_int g_gc_pending;
-static pthread_mutex_t g_gc_mtx;
-static struct thread *g_gc_list;
+static _Atomic (struct thread *) g_gc_list;
 // These are only ever accessed on the main listening thread.
 static struct thread *g_freelist;
 static size_t g_nfreelist;
@@ -227,14 +225,8 @@ static void free_struct_thread(struct thread *t)
 }
 
 static void gc_threads(void) {
-    if (atomic_load(&g_gc_pending)) {
-        struct thread *local_list;
-
-        if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
-        local_list = g_gc_list;
-        g_gc_list = NULL;
-        atomic_store(&g_gc_pending, 0);
-        if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
+    if (atomic_load(&g_gc_list)) {
+        struct thread *local_list = atomic_exchange(&g_gc_list, NULL);
 
         while (local_list) {
             struct thread *t = local_list;
@@ -559,11 +551,10 @@ static bool is_banned(int family, const struct addrinfo *remote)
 static void clientthread_cleanup(struct thread *t)
 {
     close(t->client.fd);
-    if (UNLIKELY(pthread_mutex_lock(&g_gc_mtx))) abort();
-    atomic_store(&g_gc_pending, 1);
-    t->gc_next = g_gc_list;
-    g_gc_list = t;
-    if (UNLIKELY(pthread_mutex_unlock(&g_gc_mtx))) abort();
+    for (;;) {
+        t->gc_next = g_gc_list;
+        if (atomic_compare_exchange_strong(&g_gc_list, &t->gc_next, t)) break;
+    }
 }
 
 static void* clientthread(void *data) {
@@ -968,8 +959,7 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < nsrvrs; ++i) {
         fds[i] = (struct pollfd){ .fd = srvrs[i].fd, .events = POLLIN };
     }
-    if (UNLIKELY(pthread_mutex_init(&g_gc_mtx, NULL) ||
-        pthread_mutex_init(&auth_ips_mtx, NULL))) {
+    if (UNLIKELY(pthread_mutex_init(&auth_ips_mtx, NULL))) {
         perror("pthread_mutex_init");
         return 1;
     }
