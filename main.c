@@ -60,8 +60,17 @@
 
 // BUF_SIZE is set to a multiple of a typical 1500 MTU
 // minus options-free IPv6 (40) and TCP (20) headers
+#if THREAD_STACK_SIZE >= 48 * 1024
+#define BUF_SIZE 31680
+#define MAX_BATCH 4
+#elif THREAD_STACK_SIZE >= 32 * 1024
+#define BUF_SIZE 17280
+#define MAX_BATCH 7
+#else
 #define BUF_SIZE 8640
 #define MAX_BATCH 15
+#endif
+
 
 // Number of unused struct thread to keep alloced for reuse.
 #define MAX_FREELIST 50
