@@ -41,7 +41,7 @@
 #endif
 
 #ifdef PTHREAD_STACK_MIN
-#define THREAD_STACK_SIZE MAX(8*1024, PTHREAD_STACK_MIN)
+#define THREAD_STACK_SIZE MAX(16*1024, PTHREAD_STACK_MIN)
 #else
 #define THREAD_STACK_SIZE 64*1024
 #endif
@@ -60,8 +60,8 @@
 
 // BUF_SIZE is set to a multiple of a typical 1500 MTU
 // minus options-free IPv6 (40) and TCP (20) headers
-#define BUF_SIZE 4320
-#define MAX_BATCH 29
+#define BUF_SIZE 8640
+#define MAX_BATCH 15
 
 // Number of unused struct thread to keep alloced for reuse.
 #define MAX_FREELIST 50
