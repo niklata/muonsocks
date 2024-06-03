@@ -206,6 +206,12 @@ static int bindtoip(int fd, union sockaddr_union *bindaddr) {
     return bind(fd, (struct sockaddr *)bindaddr, sz);
 }
 
+// Atomically: assigns ASSIGN = TOP and then sets TOP = NEW_TOP.
+#define LIST_EXCHANGE_TOP(TOP, ASSIGN, NEW_TOP) do { for (;;) {  \
+    (ASSIGN) = (TOP);                                           \
+    if (LIKELY(atomic_compare_exchange_strong(&(TOP), &(ASSIGN), (NEW_TOP)))) break; \
+    }} while (0)
+
 static struct thread *grow_struct_thread(void)
 {
     struct thread *t;
@@ -215,19 +221,13 @@ static struct thread *grow_struct_thread(void)
     size_t i = 1;
     for (; i < THREAD_BLOCK_SIZE - 1; ++i)
         t[i].gc_next = t + i + 1;
-    for (;;) {
-        t[i].gc_next = g_freelist;
-        if (LIKELY(atomic_compare_exchange_strong(&g_freelist, &t[i].gc_next, t + 1))) break;
-    }
+    LIST_EXCHANGE_TOP(g_freelist, t[i].gc_next, t + 1);
     return t;
 }
 
 static void free_struct_thread(struct thread *t)
 {
-    for (;;) {
-        t->gc_next = g_freelist;
-        if (LIKELY(atomic_compare_exchange_strong(&g_freelist, &t->gc_next, t))) break;
-    }
+    LIST_EXCHANGE_TOP(g_freelist, t->gc_next, t);
 }
 
 static void gc_threads(void) {
@@ -570,10 +570,7 @@ static bool is_banned(int family, const struct addrinfo *remote)
 static void clientthread_cleanup(struct thread *t)
 {
     close(t->client.fd);
-    for (;;) {
-        t->gc_next = g_gc_list;
-        if (LIKELY(atomic_compare_exchange_strong(&g_gc_list, &t->gc_next, t))) break;
-    }
+    LIST_EXCHANGE_TOP(g_gc_list, t->gc_next, t);
 }
 
 static int parse_socksreq(struct thread *t, struct socksctx *ctx)
@@ -1023,10 +1020,7 @@ int main(int argc, char** argv) {
 
                     struct thread *ct;
                     if (g_freelist) {
-                        for (;;) {
-                            ct = g_freelist;
-                            if (LIKELY(atomic_compare_exchange_strong(&g_freelist, &ct, g_freelist->gc_next))) break;
-                        }
+                        LIST_EXCHANGE_TOP(g_freelist, ct, ct->gc_next);
                     } else {
                         ct = grow_struct_thread();
                         if (UNLIKELY(!ct)) goto oom1;
