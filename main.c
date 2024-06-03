@@ -412,20 +412,26 @@ struct socksctx {
     unsigned short port;
 };
 
-static void log_dc(int clientfd, char *clientname, const struct socksctx *ctx, size_t bsent, size_t brecv)
+struct srstats
+{
+    size_t bsent;
+    size_t brecv;
+};
+
+static void log_dc(int clientfd, const char *clientname, const struct socksctx *ctx, const struct srstats *sr)
 {
     if (!g_logging) return;
-    dolog("client[%d] %s: disconnect from %s:%d sent:%zu recv:%zu\n", clientfd, clientname, ctx->namebuf, ctx->port, bsent, brecv);
+    dolog("client[%d] %s: disconnect from %s:%d sent:%zu recv:%zu\n", clientfd, clientname,
+          ctx->namebuf, ctx->port, sr->bsent, sr->brecv);
 }
 
-static void copyloop(int fd1, int fd2, char *clientname, const struct socksctx *ctx) {
+static void copyloop(int fd1, int fd2, const char *clientname, const struct socksctx *ctx) {
     char buf[BUF_SIZE];
     struct pollfd fds[2] = {
         { fd1, POLLIN, 0},
         { fd2, POLLIN, 0},
     };
-
-    size_t bsent = 0, brecv = 0;
+    struct srstats sr = { 0 };
 
     for (;;) {
         /* inactive connections are reaped after 15 min to free resources.
@@ -437,7 +443,7 @@ static void copyloop(int fd1, int fd2, char *clientname, const struct socksctx *
                  else perror("poll");
                  // fall through
         case 0:
-                 log_dc(fd1, clientname, ctx, bsent, brecv);
+                 log_dc(fd1, clientname, ctx, &sr);
                  return;
         default: break;
         }
@@ -450,7 +456,7 @@ read_retry:
         if (--cycles <= 0) continue; // Don't let one channel monopolize.
         n = recv(infd, buf, BUF_SIZE, MSG_DONTWAIT);
         if (n == 0) {
-            log_dc(fd1, clientname, ctx, bsent, brecv);
+            log_dc(fd1, clientname, ctx, &sr);
             return;
         }
         if (n < 0) {
@@ -458,18 +464,18 @@ read_retry:
             case EINTR: goto read_retry;
             case EAGAIN: continue;
             default:
-                log_dc(fd1, clientname, ctx, bsent, brecv);
+                log_dc(fd1, clientname, ctx, &sr);
                 return;
             }
         }
         assert(n >= 0);
-        if (infd == fd1) bsent += (size_t)n;
-        else brecv += (size_t)n;
+        if (infd == fd1) sr.bsent += (size_t)n;
+        else sr.brecv += (size_t)n;
         while (sent < n) {
             ssize_t m = write(outfd, buf+sent, (size_t)(n-sent));
             if (m < 0) {
                 if (errno == EINTR) continue;
-                log_dc(fd1, clientname, ctx, bsent, brecv);
+                log_dc(fd1, clientname, ctx, &sr);
                 return;
             }
             sent += m;
