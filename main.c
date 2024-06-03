@@ -396,13 +396,21 @@ static int send_error(const struct client *c, int fd, enum errorcode ec) {
     }
 }
 
-static void log_dc(int clientfd, char *clientname, char *namebuf, unsigned short port, size_t bsent, size_t brecv)
+struct socksctx {
+    char namebuf[256];
+    struct addrinfo *remote;
+    int errc;
+    unsigned short port;
+};
+
+static void log_dc(int clientfd, char *clientname, const struct socksctx *ctx, size_t bsent, size_t brecv)
 {
     if (!g_logging) return;
-    dolog("client[%d] %s: disconnect from %s:%d sent:%zu recv:%zu\n", clientfd, clientname, namebuf, port, bsent, brecv);
+    dolog("client[%d] %s: disconnect from %s:%d sent:%zu recv:%zu\n", clientfd, clientname, ctx->namebuf, ctx->port, bsent, brecv);
 }
 
-static void copyloop(int fd1, int fd2, char *buf, char *clientname, char *namebuf, unsigned short port) {
+static void copyloop(int fd1, int fd2, char *clientname, const struct socksctx *ctx) {
+    char buf[BUF_SIZE];
     struct pollfd fds[2] = {
         { fd1, POLLIN, 0},
         { fd2, POLLIN, 0},
@@ -420,7 +428,7 @@ static void copyloop(int fd1, int fd2, char *buf, char *clientname, char *namebu
                  else perror("poll");
                  // fall through
         case 0:
-                 log_dc(fd1, clientname, namebuf, port, bsent, brecv);
+                 log_dc(fd1, clientname, ctx, bsent, brecv);
                  return;
         default: break;
         }
@@ -433,7 +441,7 @@ read_retry:
         if (--cycles <= 0) continue; // Don't let one channel monopolize.
         n = recv(infd, buf, BUF_SIZE, MSG_DONTWAIT);
         if (n == 0) {
-            log_dc(fd1, clientname, namebuf, port, bsent, brecv);
+            log_dc(fd1, clientname, ctx, bsent, brecv);
             return;
         }
         if (n < 0) {
@@ -441,7 +449,7 @@ read_retry:
             case EINTR: goto read_retry;
             case EAGAIN: continue;
             default:
-                log_dc(fd1, clientname, namebuf, port, bsent, brecv);
+                log_dc(fd1, clientname, ctx, bsent, brecv);
                 return;
             }
         }
@@ -452,7 +460,7 @@ read_retry:
             ssize_t m = write(outfd, buf+sent, (size_t)(n-sent));
             if (m < 0) {
                 if (errno == EINTR) continue;
-                log_dc(fd1, clientname, namebuf, port, bsent, brecv);
+                log_dc(fd1, clientname, ctx, bsent, brecv);
                 return;
             }
             sent += m;
@@ -476,7 +484,7 @@ static bool extend_cbuf(const struct thread *t, char *buf, size_t *buflen)
     }
 }
 
-#define EXTEND_BUF() do { if (!extend_cbuf(t, buf, &buflen)) goto out0; } while (0)
+#define EXTEND_BUF() do { if (!extend_cbuf(t, buf, &buflen)) return -1; } while (0)
 #define RESET_BUF() do { buflen = 0; } while (0)
 
 static enum errorcode errno_to_sockscode(void)
@@ -542,21 +550,17 @@ static void clientthread_cleanup(struct thread *t)
     }
 }
 
-static void* clientthread(void *data) {
-    struct thread *t = (struct thread *)data;
-    char buf[BUF_SIZE];
-    char namebuf[256];
-    char clientname[256] = { 0 };
+static int parse_socksreq(struct thread *t, struct socksctx *ctx)
+{
+    char buf[1024];
     size_t buflen = 0;
     enum authmethod am = AM_INVALID;
     int fam = AF_UNSPEC;
-    int errc = EC_GENERAL_FAILURE;
-    unsigned short port;
 
     EXTEND_BUF();
 
     t->client.socksver = buf[0];
-    if (t->client.socksver == 5) {
+    if (LIKELY(t->client.socksver == 5)) {
         while (buflen < 2) { EXTEND_BUF(); }
         size_t n_methods = buf[1] >= 0 ? (size_t)buf[1] : 0;
         while (buflen < 2 + n_methods) { EXTEND_BUF(); }
@@ -582,13 +586,13 @@ static void* clientthread(void *data) {
                 }
             }
         }
-        if (am == AM_INVALID) goto out0;
+        if (am == AM_INVALID) return -1;
 
         RESET_BUF();
-        if (send_auth_response(t->client.fd, 5, am) < 0) goto out0;
+        if (send_auth_response(t->client.fd, 5, am) < 0) return -1;
         if (am == AM_USERNAME) {
             while (buflen < 5) { EXTEND_BUF(); }
-            if (buf[0] != 1) goto out0;
+            if (buf[0] != 1) return -1;
             unsigned ulen, plen;
             ulen = buf[1] >= 0 ? (unsigned)buf[1] : 0;
             while (buflen < 2 + ulen + 2) { EXTEND_BUF(); }
@@ -600,33 +604,33 @@ static void* clientthread(void *data) {
             user[ulen] = 0;
             pass[plen] = 0;
             bool allow = !strcmp(user, g_auth_user) && !strcmp(pass, g_auth_pass);
-            if (!allow) goto out0;
+            if (!allow) return -1;
             if (use_auth_ips) {
                 if (UNLIKELY(pthread_mutex_lock(&auth_ips_mtx))) abort();
                 if (!is_in_authed_list(&t->client.addr))
                     add_auth_ip(&t->client.addr);
                 if (UNLIKELY(pthread_mutex_unlock(&auth_ips_mtx))) abort();
             }
-            if (send_auth_response(t->client.fd, 1, am) < 0) goto out0;
+            if (send_auth_response(t->client.fd, 1, am) < 0) return -1;
             RESET_BUF();
         }
 
         // Now we're done with the authentication negotiations.
         while (buflen < 5) { EXTEND_BUF(); }
-        if (buf[0] != 5) goto err0;
-        if (buf[1] != 1) {
-            errc = EC_COMMAND_NOT_SUPPORTED;
-            goto err0;
+        if (UNLIKELY(buf[0] != 5)) return -2;
+        if (UNLIKELY(buf[1] != 1)) {
+            ctx->errc = EC_COMMAND_NOT_SUPPORTED;
+            return -2;
         }
-        if (buf[2] != 0) goto err0;
+        if (UNLIKELY(buf[2] != 0)) return -2;
 
         size_t minlen;
         if (buf[3] == 3) {
             size_t l = buf[4] >= 0 ? (size_t)buf[4] : 0;
             minlen = 4 + 1 + l + 2;
             while (buflen < minlen) { EXTEND_BUF(); }
-            memcpy(namebuf, buf + 4 + 1, l);
-            namebuf[l] = 0;
+            memcpy(ctx->namebuf, buf + 4 + 1, l);
+            ctx->namebuf[l] = 0;
         } else {
             int af;
             if (buf[3] == 1) {
@@ -636,113 +640,126 @@ static void* clientthread(void *data) {
                 af = AF_INET6;
                 minlen = 4 + 16 + 2;
             } else {
-                errc = EC_COMMAND_NOT_SUPPORTED;
-                goto err0;
+                ctx->errc = EC_COMMAND_NOT_SUPPORTED;
+                return -2;
             }
             while (buflen < minlen) { EXTEND_BUF(); }
-            if (namebuf != inet_ntop(af, buf + 4, namebuf, sizeof namebuf)) {
-                goto err0;
+            if (ctx->namebuf != inet_ntop(af, buf + 4, ctx->namebuf, sizeof ctx->namebuf)) {
+                return -2;
             }
         }
-        memcpy(&port, buf + minlen - 2, 2);
-        port = ntohs(port);
+        memcpy(&ctx->port, buf + minlen - 2, 2);
+        ctx->port = ntohs(ctx->port);
         if (!allow_ipv4) fam = AF_INET6;
         if (!allow_ipv6) fam = AF_INET;
     } else if (t->client.socksver == 4) {
-        if (g_auth_pass) goto err0;
+        if (g_auth_pass) return -2;
         if (!allow_ipv4) {
-            errc = EC_ADDRESSTYPE_NOT_SUPPORTED;
-            goto err0;
+            ctx->errc = EC_ADDRESSTYPE_NOT_SUPPORTED;
+            return -2;
         }
 
         while (buflen < 9) { EXTEND_BUF(); }
-        if (buf[0] != 4) goto err0;
+        if (buf[0] != 4) return -2;
         if (buf[1] != 1) {
-            errc = EC_COMMAND_NOT_SUPPORTED;
-            goto err0;
+            ctx->errc = EC_COMMAND_NOT_SUPPORTED;
+            return -2;
         }
-        memcpy(&port, buf + 2, 2);
-        port = ntohs(port);
+        memcpy(&ctx->port, buf + 2, 2);
+        ctx->port = ntohs(ctx->port);
 
         bool is_dns = false;
         if (buf[4] == 0 && buf[5] == 0 && buf[6] == 0 && buf[7] != 0) {
             is_dns = true;
         } else {
-            if (namebuf != inet_ntop(AF_INET, buf + 4, namebuf, sizeof namebuf)) {
-                goto err0;
+            if (ctx->namebuf != inet_ntop(AF_INET, buf + 4, ctx->namebuf, sizeof ctx->namebuf)) {
+                return -2;
             }
         }
         size_t i = 8;
         for (;;++i) {
             // Here we just skip the userid for now
-            if (i > BUF_SIZE / 2) goto err0;
+            if (i > BUF_SIZE / 2) return -2;
             while (buflen < i + 1) { EXTEND_BUF(); }
             if (buf[i] == 0) { ++i; break; }
         }
         if (is_dns) {
             size_t buf_start = i;
             for (;;++i) {
-                if (i - buf_start > sizeof namebuf - 1) goto err0;
+                if (i - buf_start > sizeof ctx->namebuf - 1) return -2;
                 while (buflen < i + 1) { EXTEND_BUF(); }
                 if (buf[i] == 0) {
-                    memcpy(namebuf, buf + buf_start, i - buf_start);
-                    namebuf[i - buf_start] = 0;
+                    memcpy(ctx->namebuf, buf + buf_start, i - buf_start);
+                    ctx->namebuf[i - buf_start] = 0;
                     break;
                 }
             }
         }
         fam = AF_INET;
     } else {
-        goto out0;
+        return -1;
     }
     /* there's no suitable errorcode in rfc1928 for dns lookup failure */
-    struct addrinfo *remote, *addr;
-    if (resolve(namebuf, port, fam, &remote)) {
+    if (UNLIKELY(resolve(ctx->namebuf, ctx->port, fam, &ctx->remote))) return -2;
+    return 0;
+}
+
+static void* clientthread(void *data) {
+    struct thread *t = (struct thread *)data;
+    struct socksctx ctx;
+    char clientname[256] = { 0 };
+    struct addrinfo *addr;
+
+    ctx.errc = EC_GENERAL_FAILURE;
+    int r = parse_socksreq(t, &ctx);
+    if (LIKELY(r == 0)) {
+    } else if (r == -1) {
+        goto out0;
+    } else if (r == -2) {
         goto err0;
     }
-    // DO NOT USE EXTEND_BUF() AT THIS POINT OR BEYOND WITHOUT UPDATING IT!
-    if (!allow_ipv6 && remote->ai_addr->sa_family == AF_INET6) {
-        errc = EC_ADDRESSTYPE_NOT_SUPPORTED;
+
+    if (UNLIKELY(!allow_ipv6 && ctx.remote->ai_addr->sa_family == AF_INET6)) {
+        ctx.errc = EC_ADDRESSTYPE_NOT_SUPPORTED;
         goto err1;
     }
-    if (!allow_ipv4 && remote->ai_addr->sa_family == AF_INET) {
-        errc = EC_ADDRESSTYPE_NOT_SUPPORTED;
+    if (UNLIKELY(!allow_ipv4 && ctx.remote->ai_addr->sa_family == AF_INET)) {
+        ctx.errc = EC_ADDRESSTYPE_NOT_SUPPORTED;
         goto err1;
     }
     int family, fd, flags;
-    family = family_choose(remote, &bind_addr);
-    if (is_banned(family, remote)) {
+    family = family_choose(ctx.remote, &bind_addr);
+    if (UNLIKELY(is_banned(family, ctx.remote))) {
         goto err1;
     }
     fd = socket(family, SOCK_STREAM|SOCK_CLOEXEC, 0);
-    if (fd == -1) {
-        errc = errno_to_sockscode();
+    if (UNLIKELY(fd == -1)) {
+        ctx.errc = errno_to_sockscode();
         goto err1;
     }
     flags = 1;
-    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0) {
+    if (UNLIKELY(setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)) {
         dprintf(2, "failed to set TCP_NODELAY on remote socket\n");
     }
-    if (SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1) {
-        errc = errno_to_sockscode();
+    if (UNLIKELY(SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1)) {
+        ctx.errc = errno_to_sockscode();
         goto err2;
     }
-    addr = addr_choose(remote, &bind_addr);
-    if (connect(fd, addr->ai_addr, addr->ai_addrlen) == -1) {
-        errc = errno_to_sockscode();
+    addr = addr_choose(ctx.remote, &bind_addr);
+    if (UNLIKELY(connect(fd, addr->ai_addr, addr->ai_addrlen) == -1)) {
+        ctx.errc = errno_to_sockscode();
         goto err2;
     }
-    freeaddrinfo(remote);
+    freeaddrinfo(ctx.remote);
 
     if (g_logging) {
         int af = SOCKADDR_UNION_AF(&t->client.addr);
         void *ipdata = SOCKADDR_UNION_ADDRESS(&t->client.addr);
         inet_ntop(af, ipdata, clientname, sizeof clientname);
-        dolog("client[%d] %s: connected to %s:%d\n", t->client.fd, clientname, namebuf, port);
+        dolog("client[%d] %s: connected to %s:%d\n", t->client.fd, clientname, ctx.namebuf, ctx.port);
     }
     if (LIKELY(send_error(&t->client, t->client.fd, EC_SUCCESS) >= 0)) {
-        RESET_BUF();
-        copyloop(t->client.fd, fd, buf, clientname, namebuf, port);
+        copyloop(t->client.fd, fd, clientname, &ctx);
     }
     close(fd);
  out0:
@@ -751,9 +768,9 @@ static void* clientthread(void *data) {
  err2:
     close(fd);
  err1:
-    freeaddrinfo(remote);
+    freeaddrinfo(ctx.remote);
  err0:
-    send_error(&t->client, t->client.fd, errc);
+    send_error(&t->client, t->client.fd, ctx.errc);
     goto out0;
 }
 
