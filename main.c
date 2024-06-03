@@ -216,16 +216,20 @@ static struct thread *grow_struct_thread(void)
     size_t i = 1;
     for (; i < THREAD_BLOCK_SIZE - 1; ++i)
         t[i].gc_next = t + i + 1;
-    t[i].gc_next = g_freelist;
-    g_freelist = t + 1;
+    for (;;) {
+        t[i].gc_next = g_freelist;
+        if (atomic_compare_exchange_strong(&g_freelist, &t[i].gc_next, t + 1)) break;
+    }
     g_nfreelist += THREAD_BLOCK_SIZE - 1;
     return t;
 }
 
 static void free_struct_thread(struct thread *t)
 {
-    t->gc_next = g_freelist;
-    g_freelist = t;
+    for (;;) {
+        t->gc_next = g_freelist;
+        if (atomic_compare_exchange_strong(&g_freelist, &t->gc_next, t)) break;
+    }
     ++g_nfreelist;
 }
 
@@ -1022,9 +1026,11 @@ int main(int argc, char** argv) {
 
                     struct thread *ct;
                     if (g_nfreelist > 0) {
+                        for (;;) {
+                            ct = g_freelist;
+                            if (atomic_compare_exchange_strong(&g_freelist, &ct, g_freelist->gc_next)) break;
+                        }
                         --g_nfreelist;
-                        ct = g_freelist;
-                        g_freelist = g_freelist->gc_next;
                     } else {
                         ct = grow_struct_thread();
                         if (UNLIKELY(!ct)) goto oom1;
