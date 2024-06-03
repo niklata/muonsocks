@@ -71,9 +71,8 @@
 #define MAX_BATCH 15
 #endif
 
-
-// Number of unused struct thread to keep alloced for reuse.
-#define MAX_FREELIST 50
+// struct thread is allocated in blocks
+#define THREAD_BLOCK_SIZE 64
 
 struct client {
     union sockaddr_union addr;
@@ -208,15 +207,26 @@ static int bindtoip(int fd, union sockaddr_union *bindaddr) {
     return bind(fd, (struct sockaddr *)bindaddr, sz);
 }
 
+static struct thread *grow_struct_thread(void)
+{
+    struct thread *t;
+    t = malloc(THREAD_BLOCK_SIZE * sizeof(struct thread));
+    if (UNLIKELY(!t)) return NULL;
+
+    size_t i = 1;
+    for (; i < THREAD_BLOCK_SIZE - 1; ++i)
+        t[i].gc_next = t + i + 1;
+    t[i].gc_next = g_freelist;
+    g_freelist = t + 1;
+    g_nfreelist += THREAD_BLOCK_SIZE - 1;
+    return t;
+}
+
 static void free_struct_thread(struct thread *t)
 {
-    if (g_nfreelist < MAX_FREELIST) {
-        ++g_nfreelist;
-        t->gc_next = g_freelist;
-        g_freelist = t;
-    } else {
-        free(t);
-    }
+    t->gc_next = g_freelist;
+    g_freelist = t;
+    ++g_nfreelist;
 }
 
 static void gc_threads(void) {
@@ -1016,7 +1026,7 @@ int main(int argc, char** argv) {
                         ct = g_freelist;
                         g_freelist = g_freelist->gc_next;
                     } else {
-                        ct = malloc(sizeof(struct thread));
+                        ct = grow_struct_thread();
                         if (UNLIKELY(!ct)) goto oom1;
                     }
 
