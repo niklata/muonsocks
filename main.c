@@ -217,7 +217,7 @@ static struct thread *grow_struct_thread(void)
         t[i].gc_next = t + i + 1;
     for (;;) {
         t[i].gc_next = g_freelist;
-        if (atomic_compare_exchange_strong(&g_freelist, &t[i].gc_next, t + 1)) break;
+        if (LIKELY(atomic_compare_exchange_strong(&g_freelist, &t[i].gc_next, t + 1))) break;
     }
     return t;
 }
@@ -226,7 +226,7 @@ static void free_struct_thread(struct thread *t)
 {
     for (;;) {
         t->gc_next = g_freelist;
-        if (atomic_compare_exchange_strong(&g_freelist, &t->gc_next, t)) break;
+        if (LIKELY(atomic_compare_exchange_strong(&g_freelist, &t->gc_next, t))) break;
     }
 }
 
@@ -572,7 +572,7 @@ static void clientthread_cleanup(struct thread *t)
     close(t->client.fd);
     for (;;) {
         t->gc_next = g_gc_list;
-        if (atomic_compare_exchange_strong(&g_gc_list, &t->gc_next, t)) break;
+        if (LIKELY(atomic_compare_exchange_strong(&g_gc_list, &t->gc_next, t))) break;
     }
 }
 
@@ -1025,7 +1025,7 @@ int main(int argc, char** argv) {
                     if (g_freelist) {
                         for (;;) {
                             ct = g_freelist;
-                            if (atomic_compare_exchange_strong(&g_freelist, &ct, g_freelist->gc_next)) break;
+                            if (LIKELY(atomic_compare_exchange_strong(&g_freelist, &ct, g_freelist->gc_next))) break;
                         }
                     } else {
                         ct = grow_struct_thread();
