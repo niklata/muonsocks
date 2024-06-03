@@ -118,7 +118,6 @@ static union sockaddr_union bind_addr;
 static _Atomic (struct thread *) g_gc_list;
 // These are only ever accessed on the main listening thread.
 static struct thread *g_freelist;
-static size_t g_nfreelist;
 
 enum authmethod {
     AM_NO_AUTH = 0,
@@ -220,7 +219,6 @@ static struct thread *grow_struct_thread(void)
         t[i].gc_next = g_freelist;
         if (atomic_compare_exchange_strong(&g_freelist, &t[i].gc_next, t + 1)) break;
     }
-    g_nfreelist += THREAD_BLOCK_SIZE - 1;
     return t;
 }
 
@@ -230,7 +228,6 @@ static void free_struct_thread(struct thread *t)
         t->gc_next = g_freelist;
         if (atomic_compare_exchange_strong(&g_freelist, &t->gc_next, t)) break;
     }
-    ++g_nfreelist;
 }
 
 static void gc_threads(void) {
@@ -1025,12 +1022,11 @@ int main(int argc, char** argv) {
                     }
 
                     struct thread *ct;
-                    if (g_nfreelist > 0) {
+                    if (g_freelist) {
                         for (;;) {
                             ct = g_freelist;
                             if (atomic_compare_exchange_strong(&g_freelist, &ct, g_freelist->gc_next)) break;
                         }
-                        --g_nfreelist;
                     } else {
                         ct = grow_struct_thread();
                         if (UNLIKELY(!ct)) goto oom1;
