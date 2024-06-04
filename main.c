@@ -74,6 +74,12 @@
 // struct thread is allocated in blocks
 #define THREAD_BLOCK_SIZE 64
 
+// Atomically: assigns ASSIGN = TOP and then sets TOP = NEW_TOP.
+#define LIST_EXCHANGE_TOP(TOP, ASSIGN, NEW_TOP) do { for (;;) {  \
+    (ASSIGN) = (TOP);                                           \
+    if (LIKELY(atomic_compare_exchange_strong(&(TOP), &(ASSIGN), (NEW_TOP)))) break; \
+    }} while (0)
+
 struct client {
     union sockaddr_union addr;
     int fd;
@@ -116,7 +122,7 @@ static pthread_mutex_t auth_ips_mtx;
 static union sockaddr_union bind_addr;
 
 static _Atomic (struct thread *) g_gc_list;
-// These are only ever accessed on the main listening thread.
+// This is only ever accessed on the main listening thread.
 static struct thread *g_freelist;
 
 enum authmethod {
@@ -206,12 +212,6 @@ static int bindtoip(int fd, union sockaddr_union *bindaddr) {
     return bind(fd, (struct sockaddr *)bindaddr, sz);
 }
 
-// Atomically: assigns ASSIGN = TOP and then sets TOP = NEW_TOP.
-#define LIST_EXCHANGE_TOP(TOP, ASSIGN, NEW_TOP) do { for (;;) {  \
-    (ASSIGN) = (TOP);                                           \
-    if (LIKELY(atomic_compare_exchange_strong(&(TOP), &(ASSIGN), (NEW_TOP)))) break; \
-    }} while (0)
-
 static struct thread *grow_struct_thread(void)
 {
     struct thread *t;
@@ -221,13 +221,15 @@ static struct thread *grow_struct_thread(void)
     size_t i = 1;
     for (; i < THREAD_BLOCK_SIZE - 1; ++i)
         t[i].gc_next = t + i + 1;
-    LIST_EXCHANGE_TOP(g_freelist, t[i].gc_next, t + 1);
+    t[i].gc_next = g_freelist;
+    g_freelist = t + 1;
     return t;
 }
 
 static void free_struct_thread(struct thread *t)
 {
-    LIST_EXCHANGE_TOP(g_freelist, t->gc_next, t);
+    t->gc_next = g_freelist;
+    g_freelist = t;
 }
 
 static void gc_threads(void) {
@@ -1020,7 +1022,8 @@ int main(int argc, char** argv) {
 
                     struct thread *ct;
                     if (g_freelist) {
-                        LIST_EXCHANGE_TOP(g_freelist, ct, ct->gc_next);
+                        ct = g_freelist;
+                        g_freelist = ct->gc_next;
                     } else {
                         ct = grow_struct_thread();
                         if (UNLIKELY(!ct)) goto oom1;
