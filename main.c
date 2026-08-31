@@ -765,11 +765,14 @@ static void* clientthread(void *data) {
                 close(fd);
                 continue;
             }
-
-            struct pollfd pfd = { .fd = fd, .events = POLLOUT };
-            if (poll(&pfd, 1, 2000) <= 0) {
-                close(fd);
-                continue;
+        poll_again:
+            {
+                struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+                if (poll(&pfd, 1, 2000) <= 0) {
+                    if (errno == EINTR || errno == EAGAIN) goto poll_again;
+                    close(fd);
+                    continue;
+                }
             }
             int serr = 0;
             socklen_t slen = sizeof serr;
