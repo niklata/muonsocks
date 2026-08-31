@@ -108,10 +108,8 @@ static char *g_user_id;
 static char *g_chroot;
 static char *g_auth_user;
 static char *g_auth_pass;
-static int s6_notify_fd = 3;
 static bool allow_ipv4 = true;
 static bool allow_ipv6 = true;
-static bool s6_notify_enable = false;
 static bool use_auth_ips = false;
 static bool g_logging = false;
 static size_t nauth_ips;
@@ -812,7 +810,6 @@ static int usage(void) {
             "option -4 or -6 disables ipv6 or ipv4 respectively\n"
             "option -u <user> runs muonsocks as the given user\n"
             "option -C <dir> makes muonsocks chroot to the specified dir\n"
-            "option -d <fdnum> specifies the s6 notification file descriptor\n"
             "option -b specifies which ip outgoing connections are bound to\n"
             "option -1 activates auth_once mode: once a specific ip address\n"
             "authed successfully with user/pass, it is added to a whitelist\n"
@@ -852,7 +849,7 @@ int main(int argc, char** argv) {
     int ch;
     unsigned short port = 1080;
 
-    while ((ch = getopt(argc, argv, ":146vb:u:C:U:P:i:p:d:")) != -1) {
+    while ((ch = getopt(argc, argv, ":146vb:u:C:U:P:i:p:")) != -1) {
         switch (ch) {
         case '1':
             use_auth_ips = true;
@@ -904,10 +901,6 @@ int main(int argc, char** argv) {
             port = (unsigned short)p;
             break;
         }
-        case 'd':
-            s6_notify_fd = atoi(optarg);
-            s6_notify_enable = true;
-            break;
         case ':':
             dprintf(2, "error: option -%c requires an operand\n", optopt);
             /* fall through */
@@ -983,20 +976,6 @@ int main(int argc, char** argv) {
     if (pthread_attr_setstacksize(&attr, THREAD_STACK_SIZE)) {
         perror("pthread_attr_setstacksize");
         return 1;
-    }
-
-    if (s6_notify_enable) {
-        char buf = '\n';
-        for (;;) {
-            ssize_t r = write(s6_notify_fd, &buf, 1);
-            if (r < 1) {
-                if (r == -1 && errno == EINTR) continue;
-                perror("s6_notify/write");
-                return 1;
-            }
-            break;
-        }
-        close(s6_notify_fd);
     }
 
     for (;;) {
