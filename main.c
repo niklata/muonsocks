@@ -153,24 +153,6 @@ static void dolog(const char *format, ...)
     va_end(args);
 }
 
-static int family_choose(struct addrinfo *remote, union sockaddr_union *addr) {
-    int family = SOCKADDR_UNION_AF(addr);
-    return family == AF_UNSPEC ? remote->ai_family : family;
-}
-
-static struct addrinfo* addr_choose(struct addrinfo *list, union sockaddr_union *addr) {
-    int family = SOCKADDR_UNION_AF(addr);
-    if (family == AF_UNSPEC) return list;
-    if (!allow_ipv4 || !allow_ipv6) {
-        struct addrinfo *p;
-        for (p = list; p; p = p->ai_next) {
-            if (p->ai_family == family) return p;
-        }
-        dprintf(2, "warning: address family mismatch\n");
-    }
-    return list;
-}
-
 static int resolve(const char *host, unsigned short port, int fam, struct addrinfo** addr) {
     struct addrinfo hints = {
         .ai_family = fam,
@@ -752,31 +734,64 @@ static void* clientthread(void *data) {
         ctx.errc = EC_ADDRESSTYPE_NOT_SUPPORTED;
         goto err1;
     }
-    int family, fd, flags;
-    family = family_choose(ctx.remote, &bind_addr);
-    if (UNLIKELY(is_banned(family, ctx.remote))) {
-        goto err1;
-    }
-    fd = socket(family, SOCK_STREAM|SOCK_CLOEXEC, 0);
-    if (UNLIKELY(fd == -1)) {
-        ctx.errc = errno_to_sockscode();
-        goto err1;
-    }
-    flags = 1;
-    if (UNLIKELY(setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)) {
-        dprintf(2, "failed to set TCP_NODELAY on remote socket\n");
-    }
-    if (UNLIKELY(SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1)) {
-        ctx.errc = errno_to_sockscode();
-        goto err2;
-    }
-    addr = addr_choose(ctx.remote, &bind_addr);
-    if (UNLIKELY(connect(fd, addr->ai_addr, addr->ai_addrlen) == -1)) {
-        ctx.errc = errno_to_sockscode();
-        goto err2;
-    }
-    freeaddrinfo(ctx.remote);
+    int fd = -1, flags;
+    for (addr = ctx.remote; addr; addr = addr->ai_next) {
+        if (!allow_ipv4 && addr->ai_family == AF_INET) continue;
+        if (!allow_ipv6 && addr->ai_family == AF_INET6) continue;
+        if (UNLIKELY(is_banned(addr->ai_family, ctx.remote))) continue;
 
+#ifdef __linux__
+        fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0);
+        if (UNLIKELY(fd == -1)) continue;
+#else
+        fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC, 0);
+        if (UNLIKELY(fd == -1)) continue;
+        if (UNLIKELY(fcntl(fd, F_SETFL, O_NONBLOCK) < 0)) {
+            close(fd);
+            continue;
+        }
+#endif
+
+        if (UNLIKELY(SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1)) {
+            close(fd);
+            continue;
+        }
+        if (connect(fd, addr->ai_addr, addr->ai_addrlen) == 0) {
+            goto connect_ok;
+        } else {
+            if (errno != EINPROGRESS) {
+                close(fd);
+                continue;
+            }
+
+            struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+            if (poll(&pfd, 1, 2000) <= 0) {
+                close(fd);
+                continue;
+            }
+            int serr = 0;
+            socklen_t slen = sizeof serr;
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &serr, &slen) < 0 || serr) {
+                close(fd);
+                continue;
+            }
+        connect_ok:
+            if (UNLIKELY(fcntl(fd, F_SETFL, 0) < 0)) {
+                close(fd);
+                continue;
+            }
+            flags = 1;
+            if (UNLIKELY(setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)) {
+                dprintf(2, "failed to set TCP_NODELAY on remote socket\n");
+            }
+            freeaddrinfo(ctx.remote);
+            goto conn_ok;
+        }
+    }
+    // Failed to connect to all addresses.
+    ctx.errc = errno_to_sockscode();
+    goto err2;
+conn_ok:
     if (g_logging) {
         int af = SOCKADDR_UNION_AF(&t->client.addr);
         void *ipdata = SOCKADDR_UNION_ADDRESS(&t->client.addr);
