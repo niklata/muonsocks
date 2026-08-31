@@ -163,11 +163,13 @@ static int family_choose(struct addrinfo *remote, union sockaddr_union *addr) {
 static struct addrinfo* addr_choose(struct addrinfo *list, union sockaddr_union *addr) {
     int family = SOCKADDR_UNION_AF(addr);
     if (family == AF_UNSPEC) return list;
-    struct addrinfo *p;
-    for (p = list; p; p = p->ai_next) {
-        if (p->ai_family == family) return p;
+    if (!allow_ipv4 || !allow_ipv6) {
+        struct addrinfo *p;
+        for (p = list; p; p = p->ai_next) {
+            if (p->ai_family == family) return p;
+        }
+        dprintf(2, "warning: address family mismatch\n");
     }
-    dprintf(2, "warning: address family mismatch\n");
     return list;
 }
 
