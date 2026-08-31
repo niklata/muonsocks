@@ -740,7 +740,7 @@ static void* clientthread(void *data) {
         if (!allow_ipv6 && addr->ai_family == AF_INET6) continue;
         if (UNLIKELY(is_banned(addr->ai_family, ctx.remote))) continue;
 
-#ifdef __linux__
+#ifndef USE_ACCEPT4
         fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0);
         if (UNLIKELY(fd == -1)) continue;
 #else
@@ -756,10 +756,12 @@ static void* clientthread(void *data) {
             close(fd);
             continue;
         }
+    connect_again:
         if (connect(fd, addr->ai_addr, addr->ai_addrlen) == 0) {
             goto connect_ok;
         } else {
             if (errno != EINPROGRESS) {
+                if (errno == EINTR) goto connect_again;
                 close(fd);
                 continue;
             }
