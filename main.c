@@ -2,7 +2,7 @@
    muonsocks - multithreaded, small, efficient SOCKS(5|4a) server.
 
    Copyright (C) 2017 rofl0r.
-   Copyright 2020-2024 Nicholas J. Kain
+   Copyright 2020-2026 Nicholas J. Kain
 
    SPDX-License-Identifier: MIT
 
@@ -741,10 +741,10 @@ static void* clientthread(void *data) {
         if (UNLIKELY(is_banned(addr->ai_family, ctx.remote))) continue;
 
 #ifndef USE_ACCEPT4
-        fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0);
+        fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, addr->ai_protocol);
         if (UNLIKELY(fd == -1)) continue;
 #else
-        fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC, 0);
+        fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC, addr->ai_protocol);
         if (UNLIKELY(fd == -1)) continue;
         if (UNLIKELY(fcntl(fd, F_SETFL, O_NONBLOCK) < 0)) {
             close(fd);
