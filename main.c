@@ -271,7 +271,7 @@ retry:
     int flags = 1;
 #ifndef USE_ACCEPT4
     flags = fcntl(client->fd, F_GETFL);
-    if (fcntl(client->fd, F_SETFL, flags & ~O_NONBLOCK) == -1)
+    if (fcntl(client->fd, F_SETFL, flags | O_NONBLOCK) == -1)
         dprintf(2, "failed to set O_NONBLOCK on client socket\n");
     if (fcntl(client->fd, F_SETFD, FD_CLOEXEC) == -1)
         dprintf(2, "failed to set CLOEXEC on client socket\n");
@@ -722,9 +722,11 @@ static int client_connect(const struct addrinfo *addr, bool *connected)
     fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, addr->ai_protocol);
     if (UNLIKELY(fd == -1)) return fd;
 #else
-    fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC, addr->ai_protocol);
+    fd = socket(addr->ai_family, SOCK_STREAM, addr->ai_protocol);
     if (UNLIKELY(fd == -1)) return fd;
-    if (UNLIKELY(fcntl(fd, F_SETFL, O_NONBLOCK) < 0)) goto fail;
+    int flags = fcntl(fd, F_GETFL);
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) goto fail;
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) goto fail;
 #endif
 
     if (UNLIKELY(SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1)) goto fail;
