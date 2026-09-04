@@ -445,9 +445,7 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
                  if (errno == EINTR || errno == EAGAIN) continue;
                  else perror("poll");
                  // fall through
-        case 0:
-                 log_dc(fd1, clientname, ctx, &sr);
-                 return;
+        case 0: goto discon;
         default: break;
         }
         int infd = (fds[0].revents & POLLIN) ? fd1 : fd2;
@@ -458,17 +456,12 @@ read_retry:
         sent = 0;
         if (--cycles <= 0) continue; // Don't let one channel monopolize.
         n = recv(infd, buf, BUF_SIZE, MSG_DONTWAIT);
-        if (n == 0) {
-            log_dc(fd1, clientname, ctx, &sr);
-            return;
-        }
+        if (n == 0) goto discon;
         if (n < 0) {
             switch (errno) {
             case EINTR: goto read_retry;
             case EAGAIN: continue;
-            default:
-                log_dc(fd1, clientname, ctx, &sr);
-                return;
+            default: goto discon;
             }
         }
         assert(n >= 0);
@@ -478,13 +471,15 @@ read_retry:
             ssize_t m = write(outfd, buf+sent, (size_t)(n-sent));
             if (m < 0) {
                 if (errno == EINTR) continue;
-                log_dc(fd1, clientname, ctx, &sr);
-                return;
+                goto discon;
             }
             sent += m;
         }
         goto read_retry;
     }
+    return;
+discon:
+    log_dc(fd1, clientname, ctx, &sr);
 }
 
 static bool extend_cbuf(const struct thread *t, char *buf, size_t *buflen)
