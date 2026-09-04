@@ -70,13 +70,10 @@
 // minus options-free IPv6 (40) and TCP (20) headers
 #if THREAD_STACK_SIZE >= 48 * 1024
 #define BUF_SIZE 31680
-#define MAX_BATCH 4
 #elif THREAD_STACK_SIZE >= 32 * 1024
 #define BUF_SIZE 17280
-#define MAX_BATCH 7
 #else
 #define BUF_SIZE 8640
-#define MAX_BATCH 15
 #endif
 
 // struct thread is allocated in blocks
@@ -428,7 +425,8 @@ static void log_dc(int clientfd, const char *clientname, const struct socksctx *
           ctx->namebuf, ctx->port, sr->bsent, sr->brecv);
 }
 
-static void copyloop(int fd1, int fd2, const char *clientname, const struct socksctx *ctx) {
+static void copyloop(int fd1, int fd2, const char *clientname, const struct socksctx *ctx)
+{
     char buf[BUF_SIZE];
     struct pollfd fds[2] = {
         { fd1, POLLIN, 0},
@@ -448,34 +446,69 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
         case 0: goto discon;
         default: break;
         }
-        int infd = (fds[0].revents & POLLIN) ? fd1 : fd2;
-        int outfd = infd == fd2 ? fd1 : fd2;
-        ssize_t sent, n;
-        int cycles = MAX_BATCH;
-read_retry:
-        sent = 0;
-        if (--cycles <= 0) continue; // Don't let one channel monopolize.
-        n = recv(infd, buf, BUF_SIZE, MSG_DONTWAIT);
-        if (n == 0) goto discon;
-        if (n < 0) {
-            switch (errno) {
-            case EINTR: goto read_retry;
-            case EAGAIN: continue;
-            default: goto discon;
+
+        ssize_t sent = 0, n = 0;
+    read_retry0:
+        if (fds[0].revents & POLLIN) {
+            n = read(fd1, buf, BUF_SIZE);
+            if (n == 0) goto discon;
+            if (n < 0) {
+                switch (errno) {
+                case EINTR: goto read_retry0;
+                case EAGAIN: n = 0; break;
+                default: goto discon;
+                }
             }
+            sr.bsent += (size_t)n;
         }
-        assert(n >= 0);
-        if (infd == fd1) sr.bsent += (size_t)n;
-        else sr.brecv += (size_t)n;
         while (sent < n) {
-            ssize_t m = write(outfd, buf+sent, (size_t)(n-sent));
+            ssize_t m = write(fd2, buf+sent, (size_t)(n-sent));
+            if (m > 0) {
+                sent += m;
+                continue;
+            }
             if (m < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    struct pollfd pft = { .fd = fd2, .events = POLLOUT };
+                    int r = poll(&pft, 1, -1);
+                    if (r >= 0 || errno == EINTR) continue;
+                    goto discon;
+                }
                 if (errno == EINTR) continue;
                 goto discon;
             }
-            sent += m;
         }
-        goto read_retry;
+        sent = 0; n = 0;
+    read_retry1:
+        if (fds[1].revents & POLLIN) {
+            n = read(fd2, buf, BUF_SIZE);
+            if (n == 0) goto discon;
+            if (n < 0) {
+                switch (errno) {
+                case EINTR: goto read_retry1;
+                case EAGAIN: n = 0; break;
+                default: goto discon;
+                }
+            }
+            sr.brecv += (size_t)n;
+        }
+        while (sent < n) {
+            ssize_t m = write(fd1, buf+sent, (size_t)(n-sent));
+            if (m > 0) {
+                sent += m;
+                continue;
+            }
+            if (m < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    struct pollfd pft = { .fd = fd1, .events = POLLOUT };
+                    int r = poll(&pft, 1, -1);
+                    if (r >= 0 || errno == EINTR) continue;
+                    goto discon;
+                }
+                if (errno == EINTR) continue;
+                goto discon;
+            }
+        }
     }
     return;
 discon:
