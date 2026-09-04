@@ -447,7 +447,9 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
         default: break;
         }
 
-        ssize_t sent = 0, n = 0;
+        ssize_t sent, n;
+    spec_read:
+        sent = 0, n = 0;
     read_retry0:
         if (fds[0].revents & POLLIN) {
             n = read(fd1, buf, BUF_SIZE);
@@ -455,7 +457,7 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
             if (n < 0) {
                 switch (errno) {
                 case EINTR: goto read_retry0;
-                case EAGAIN: n = 0; break;
+                case EAGAIN: n = 0; fds[0].revents &= ~POLLIN; break;
                 default: goto discon;
                 }
             }
@@ -486,7 +488,7 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
             if (n < 0) {
                 switch (errno) {
                 case EINTR: goto read_retry1;
-                case EAGAIN: n = 0; break;
+                case EAGAIN: n = 0; fds[1].revents &= ~POLLIN; break;
                 default: goto discon;
                 }
             }
@@ -509,6 +511,8 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
                 goto discon;
             }
         }
+        // If we allow half-duplex speculation, starvation becomes possible.
+        if ((fds[0].revents & POLLIN) && (fds[1].revents & POLLIN)) goto spec_read;
     }
     return;
 discon:
