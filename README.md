@@ -11,6 +11,7 @@ changes:
 * Support changing uid and chroot
 * Support binding to multiple ip/port tuples
 * Rewritten SOCKS5 parser that tolerates inputs split across multiple recv()
+* More robust and faster handling of DNS resolution and outgoing connections
 * More performance from larger buffers and fewer poll invocations
 * Use TCP_NODELAY to lower latency impact
 * Use lock-free list rather than dynamic array for threads
@@ -24,7 +25,7 @@ are set by the available RAM and file descriptor limits.  OOM does not
 cause termination, and explicit memory allocation and heap
 fragmentation are minimized.
 
-It is ~1000 LoC compared to microsocks's ~600 LoC, so it is not
+It is ~1150 LoC compared to microsocks's ~600 LoC, so it is not
 as minimal, but it is still a very small program (~27KiB dynamically
 linked to glibc on amd64).
 

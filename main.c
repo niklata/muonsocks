@@ -58,6 +58,10 @@
 #define USE_ACCEPT4
 #endif
 
+// Time spent trying to connect to an IP address before failing or
+// attempting another IP (for hosts that resolve to multiple IPs).
+#define CONNECTION_TIMEOUT_MS 2000
+
 // BUF_SIZE is set to a multiple of a typical 1500 MTU
 // minus options-free IPv6 (40) and TCP (20) headers
 #if THREAD_STACK_SIZE >= 48 * 1024
@@ -711,6 +715,53 @@ static int parse_socksreq(struct thread *t, struct socksctx *ctx)
     return 0;
 }
 
+static int client_connect(const struct addrinfo *addr, bool *connected)
+{
+    int fd = -1;
+    *connected = false;
+#ifndef USE_ACCEPT4
+    fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, addr->ai_protocol);
+    if (UNLIKELY(fd == -1)) return fd;
+#else
+    fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC, addr->ai_protocol);
+    if (UNLIKELY(fd == -1)) return fd;
+    if (UNLIKELY(fcntl(fd, F_SETFL, O_NONBLOCK) < 0)) goto fail;
+#endif
+
+    if (UNLIKELY(SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1)) goto fail;
+
+connect_again:
+    if (connect(fd, addr->ai_addr, addr->ai_addrlen)) {
+        if (errno != EINPROGRESS) {
+            if (errno == EINTR) goto connect_again;
+            goto fail;
+        }
+    } else {
+        *connected = true;
+    }
+    return fd;
+fail:
+    close(fd);
+    return -1;
+}
+
+static struct addrinfo *pull_addr(struct addrinfo *addr, const struct socksctx *ctx)
+{
+    for (; addr; addr = addr->ai_next) {
+        if (!allow_ipv4 && addr->ai_family == AF_INET) continue;
+        if (!allow_ipv6 && addr->ai_family == AF_INET6) continue;
+        if (UNLIKELY(is_banned(addr->ai_family, ctx->remote))) continue;
+        break;
+    }
+    return addr;
+}
+
+static inline long timespec_diff_ms(const struct timespec *start, const struct timespec *end)
+{
+    return ((end->tv_sec - start->tv_sec) * 1000) +
+           ((end->tv_nsec - start->tv_nsec) / 1000000);
+}
+
 static void* clientthread(void *data) {
     struct thread *t = (struct thread *)data;
     struct socksctx ctx;
@@ -734,69 +785,116 @@ static void* clientthread(void *data) {
         ctx.errc = EC_ADDRESSTYPE_NOT_SUPPORTED;
         goto err1;
     }
+    addr = ctx.remote;
     int fd = -1, flags;
-    for (addr = ctx.remote; addr; addr = addr->ai_next) {
-        if (!allow_ipv4 && addr->ai_family == AF_INET) continue;
-        if (!allow_ipv6 && addr->ai_family == AF_INET6) continue;
-        if (UNLIKELY(is_banned(addr->ai_family, ctx.remote))) continue;
+    struct pollfd pfd[2] = {
+        { .fd = -1, .events = 0 },
+        { .fd = -1, .events = 0 },
+    };
+    struct timespec spawn_ts[2] = {0};
 
-#ifndef USE_ACCEPT4
-        fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, addr->ai_protocol);
-        if (UNLIKELY(fd == -1)) continue;
-#else
-        fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC, addr->ai_protocol);
-        if (UNLIKELY(fd == -1)) continue;
-        if (UNLIKELY(fcntl(fd, F_SETFL, O_NONBLOCK) < 0)) {
-            close(fd);
-            continue;
-        }
-#endif
-
-        if (UNLIKELY(SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1)) {
-            close(fd);
-            continue;
-        }
-    connect_again:
-        if (connect(fd, addr->ai_addr, addr->ai_addrlen) == 0) {
-            goto connect_ok;
-        } else {
-            if (errno != EINPROGRESS) {
-                if (errno == EINTR) goto connect_again;
-                close(fd);
-                continue;
-            }
-        poll_again:
-            {
-                struct pollfd pfd = { .fd = fd, .events = POLLOUT };
-                if (poll(&pfd, 1, 2000) <= 0) {
-                    if (errno == EINTR || errno == EAGAIN) goto poll_again;
-                    close(fd);
-                    continue;
+    for (;;) {
+        if (pfd[0].fd == -1 || pfd[1].fd == -1) {
+            addr = pull_addr(addr, &ctx);
+            if (addr) {
+                bool connected;
+                int tfd = client_connect(addr, &connected);
+                if (tfd == -1) continue;
+                if (connected) {
+                    fd = tfd;
+                    close(pfd[0].fd);
+                    close(pfd[1].fd);
+                    goto connected;
+                }
+                if (pfd[0].fd == -1) {
+                    pfd[0].fd = tfd;
+                    pfd[0].events = POLLOUT;
+                    clock_gettime(CLOCK_MONOTONIC, &spawn_ts[0]);
+                } else if (pfd[1].fd == -1) {
+                    pfd[1].fd = tfd;
+                    pfd[1].events = POLLOUT;
+                    clock_gettime(CLOCK_MONOTONIC, &spawn_ts[1]);
+                } else {
+                    abort(); // should never happen, coding logic error
+                }
+            } else {
+                if (pfd[0].fd == -1 && pfd[1].fd == -1) {
+                    // Failed to connect to all addresses.
+                    ctx.errc = errno_to_sockscode();
+                    goto err1;
                 }
             }
-            int serr = 0;
-            socklen_t slen = sizeof serr;
-            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &serr, &slen) < 0 || serr) {
-                close(fd);
-                continue;
-            }
-        connect_ok:
-            if (UNLIKELY(fcntl(fd, F_SETFL, 0) < 0)) {
-                close(fd);
-                continue;
-            }
-            flags = 1;
-            if (UNLIKELY(setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)) {
-                dprintf(2, "failed to set TCP_NODELAY on remote socket\n");
-            }
-            freeaddrinfo(ctx.remote);
-            goto conn_ok;
         }
+    poll_again:
+        r = poll(pfd, 2, 50); // fixed timeout so we regularly try to queue new addrs
+        if (r < 0) {
+            if (errno == EINTR || errno == EAGAIN) goto poll_again;
+            close(pfd[0].fd);
+            close(pfd[1].fd);
+            goto err1;
+        }
+        if (r == 0) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (pfd[0].fd >= 0) {
+                long elapsed = timespec_diff_ms(&spawn_ts[0], &now);
+                if (elapsed >= CONNECTION_TIMEOUT_MS) {
+                    close(pfd[0].fd);
+                    pfd[0].fd = -1;
+                }
+            }
+            if (pfd[1].fd >= 0) {
+                long elapsed = timespec_diff_ms(&spawn_ts[1], &now);
+                if (elapsed >= CONNECTION_TIMEOUT_MS) {
+                    close(pfd[1].fd);
+                    pfd[1].fd = -1;
+                }
+            }
+        } else {
+            if (pfd[0].revents & POLLOUT) {
+                int serr = 0;
+                socklen_t slen = sizeof serr;
+                if (getsockopt(pfd[0].fd, SOL_SOCKET, SO_ERROR, &serr, &slen) < 0 || serr) {
+                    close(pfd[0].fd);
+                    pfd[0].fd = -1;
+                } else {
+                    fd = pfd[0].fd;
+                    close(pfd[1].fd);
+                    break;
+                }
+            }
+            if (pfd[1].revents & POLLOUT) {
+                int serr = 0;
+                socklen_t slen = sizeof serr;
+                if (getsockopt(pfd[1].fd, SOL_SOCKET, SO_ERROR, &serr, &slen) < 0 || serr) {
+                    close(pfd[1].fd);
+                    pfd[1].fd = -1;
+                } else {
+                    fd = pfd[1].fd;
+                    close(pfd[0].fd);
+                    break;
+                }
+            }
+            if (pfd[0].revents & (POLLERR|POLLHUP)) {
+                close(pfd[0].fd);
+                pfd[0].fd = -1;
+            }
+            if (pfd[1].revents & (POLLERR|POLLHUP)) {
+                close(pfd[1].fd);
+                pfd[1].fd = -1;
+            }
+        }
+        if (pfd[0].fd == -1 || pfd[1].fd == -1) continue;
+        goto poll_again;
     }
-    // Failed to connect to all addresses.
-    ctx.errc = errno_to_sockscode();
-    goto err2;
-conn_ok:
+connected:
+
+    if (UNLIKELY(fcntl(fd, F_SETFL, 0) < 0)) goto err2;
+    flags = 1;
+    if (UNLIKELY(setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)) {
+        dprintf(2, "failed to set TCP_NODELAY on remote socket\n");
+    }
+    freeaddrinfo(ctx.remote);
     if (g_logging) {
         int af = SOCKADDR_UNION_AF(&t->client.addr);
         void *ipdata = SOCKADDR_UNION_ADDRESS(&t->client.addr);
