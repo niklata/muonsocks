@@ -62,6 +62,10 @@
 // attempting another IP (for hosts that resolve to multiple IPs).
 #define CONNECTION_TIMEOUT_MS 2000
 
+// Time to wait before queueing a new connection attempt for hosts
+// with multiple IPs.
+#define CONNECTION_DELAY_MS 50
+
 // BUF_SIZE is set to a multiple of a typical 1500 MTU
 // minus options-free IPv6 (40) and TCP (20) headers
 #if THREAD_STACK_SIZE >= 48 * 1024
@@ -786,12 +790,14 @@ static void* clientthread(void *data) {
         goto err1;
     }
     addr = ctx.remote;
-    int fd = -1, flags;
+    int fd = -1, pto = CONNECTION_DELAY_MS;
     struct pollfd pfd[2] = {
         { .fd = -1, .events = 0 },
         { .fd = -1, .events = 0 },
     };
     struct timespec spawn_ts[2] = {0};
+    struct timespec now, nowp;
+    clock_gettime(CLOCK_MONOTONIC, &now);
 
     for (;;) {
         if (pfd[0].fd == -1 || pfd[1].fd == -1) {
@@ -826,15 +832,27 @@ static void* clientthread(void *data) {
             }
         }
     poll_again:
-        r = poll(pfd, 2, 50); // fixed timeout so we regularly try to queue new addrs
+        r = poll(pfd, 2, pto); // fixed timeout so we regularly try to queue new addrs
+        pto = CONNECTION_DELAY_MS;
         if (r < 0) {
-            if (errno == EINTR || errno == EAGAIN) goto poll_again;
+            if (errno == EINTR || errno == EAGAIN) {
+                nowp = now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                long elapsed = timespec_diff_ms(&nowp, &now);
+                if (elapsed >= 0 && elapsed < CONNECTION_DELAY_MS) {
+                    pto = CONNECTION_DELAY_MS - (int)elapsed;
+                    goto poll_again;
+                } else {
+                    goto handle_timeouts;
+                }
+            }
             close(pfd[0].fd);
             close(pfd[1].fd);
             goto err1;
         }
         if (r == 0) {
-            struct timespec now;
+        handle_timeouts:
+            nowp = now;
             clock_gettime(CLOCK_MONOTONIC, &now);
             if (pfd[0].fd >= 0) {
                 long elapsed = timespec_diff_ms(&spawn_ts[0], &now);
@@ -890,7 +908,7 @@ static void* clientthread(void *data) {
 connected:
 
     if (UNLIKELY(fcntl(fd, F_SETFL, 0) < 0)) goto err2;
-    flags = 1;
+    int flags = 1;
     if (UNLIKELY(setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)) {
         dprintf(2, "failed to set TCP_NODELAY on remote socket\n");
     }
