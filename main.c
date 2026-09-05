@@ -431,6 +431,28 @@ static void log_dc(int clientfd, const char *clientname, const struct socksctx *
           ctx->namebuf, ctx->port, sr->bsent, sr->brecv);
 }
 
+static ssize_t copywrite(int fd, const char *buf, ssize_t buflen)
+{
+    ssize_t sent = 0;
+    while (sent < buflen) {
+        ssize_t m = write(fd, buf+sent, (size_t)(buflen-sent));
+        if (m > 0) {
+            sent += m;
+            continue;
+        }
+        if (m < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                int r = poll(&(struct pollfd){ .fd = fd, .events = POLLOUT }, 1, -1);
+                if (r >= 0 || errno == EINTR) continue;
+                return -1;
+            }
+            if (errno == EINTR) continue;
+            return -1;
+        }
+    }
+    return sent;
+}
+
 static void copyloop(int fd1, int fd2, const char *clientname, const struct socksctx *ctx)
 {
     char buf[BUF_SIZE];
@@ -455,8 +477,7 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
 
     read_retry0:
         if (fds[0].revents & POLLIN) {
-            ssize_t sent = 0, n = 0;
-            n = read(fd1, buf, BUF_SIZE);
+            ssize_t n = read(fd1, buf, BUF_SIZE);
             if (n == 0) goto discon;
             if (n < 0) {
                 switch (errno) {
@@ -465,29 +486,13 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
                 default: goto discon;
                 }
             }
-            sr.bsent += (size_t)n;
-            while (sent < n) {
-                ssize_t m = write(fd2, buf+sent, (size_t)(n-sent));
-                if (m > 0) {
-                    sent += m;
-                    continue;
-                }
-                if (m < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        struct pollfd pft = { .fd = fd2, .events = POLLOUT };
-                        int r = poll(&pft, 1, -1);
-                        if (r >= 0 || errno == EINTR) continue;
-                        goto discon;
-                    }
-                    if (errno == EINTR) continue;
-                    goto discon;
-                }
-            }
+            ssize_t sent = copywrite(fd2, buf, n);
+            if (sent < 0) goto discon;
+            sr.bsent += (size_t)sent;
         }
     read_retry1:
         if (fds[1].revents & POLLIN) {
-            ssize_t sent = 0, n = 0;
-            n = read(fd2, buf, BUF_SIZE);
+            ssize_t n = read(fd2, buf, BUF_SIZE);
             if (n == 0) goto discon;
             if (n < 0) {
                 switch (errno) {
@@ -496,24 +501,9 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
                 default: goto discon;
                 }
             }
-            sr.brecv += (size_t)n;
-            while (sent < n) {
-                ssize_t m = write(fd1, buf+sent, (size_t)(n-sent));
-                if (m > 0) {
-                    sent += m;
-                    continue;
-                }
-                if (m < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        struct pollfd pft = { .fd = fd1, .events = POLLOUT };
-                        int r = poll(&pft, 1, -1);
-                        if (r >= 0 || errno == EINTR) continue;
-                        goto discon;
-                    }
-                    if (errno == EINTR) continue;
-                    goto discon;
-                }
-            }
+            ssize_t sent = copywrite(fd1, buf, n);
+            if (sent < 0) goto discon;
+            sr.brecv += (size_t)sent;
         }
     }
     return;
