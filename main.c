@@ -425,7 +425,7 @@ static int send_error(const struct client *c, int fd, enum errorcode ec) {
 struct socksctx {
     char namebuf[256];
     struct addrinfo *remote;
-    int errc;
+    enum errorcode errc;
     unsigned short port;
 };
 
