@@ -80,6 +80,17 @@ static int socket_setup_obsolete(int fd, bool nonblock)
 #define mu_accept(...) accept(__VA_ARGS__)
 #endif
 
+#ifdef __APPLE__
+static inline void *reallocarray(void *ptr, size_t nmemb, size_t size)
+{
+    if ((nmemb >= SIZE_MAX || size >= SIZE_MAX) && nmemb > 0 && SIZE_MAX / nmemb < size) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    return realloc(ptr, nmemb * size);
+}
+#endif
+
 // Time spent trying to connect to an IP address before failing or
 // attempting another IP (for hosts that resolve to multiple IPs).
 #define CONNECTION_TIMEOUT_MS 2000
