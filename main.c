@@ -460,7 +460,10 @@ static ssize_t copywrite(int fd, const char *buf, ssize_t buflen)
 static int copyread(int in_fd, int out_fd, char *buf, size_t *counter)
 {
     ssize_t n = read(in_fd, buf, BUF_SIZE);
-    if (n == 0) return 0;
+    if (n == 0) {
+        shutdown(out_fd, SHUT_WR);
+        return 0;
+    }
     if (n < 0) {
         switch (errno) {
         case EINTR: return 1; // zero-size read/write
@@ -496,14 +499,20 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
         default: break;
         }
 
+        if (UNLIKELY(fds[0].revents & (POLLERR|POLLHUP))) goto discon;
+        if (UNLIKELY(fds[1].revents & (POLLERR|POLLHUP))) goto discon;
+
         if (fds[0].revents & POLLIN) {
             int r = copyread(fd1, fd2, buf, &sr.bsent);
-            if (r <= 0) goto discon;
+            if (UNLIKELY(r == 0)) fds[0].events &= ~POLLIN;
+            if (UNLIKELY(r < 0)) goto discon;
         }
         if (fds[1].revents & POLLIN) {
             int r = copyread(fd2, fd1, buf, &sr.brecv);
-            if (r <= 0) goto discon;
+            if (UNLIKELY(r == 0)) fds[1].events &= ~POLLIN;
+            if (UNLIKELY(r < 0)) goto discon;
         }
+        if (UNLIKELY(!(fds[0].events & POLLIN) && !(fds[1].events & POLLIN))) goto discon;
     }
     return;
 discon:
