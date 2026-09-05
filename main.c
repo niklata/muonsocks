@@ -453,6 +453,27 @@ static ssize_t copywrite(int fd, const char *buf, ssize_t buflen)
     return sent;
 }
 
+// 1 = read and wrote data
+// 0 = disconnect
+// -1 = error
+// -2 = no data available
+static int copyread(int in_fd, int out_fd, char *buf, size_t *counter)
+{
+    ssize_t n = read(in_fd, buf, BUF_SIZE);
+    if (n == 0) return 0;
+    if (n < 0) {
+        switch (errno) {
+        case EINTR: return 1; // zero-size read/write
+        case EAGAIN: return -2; // no data available
+        default: return -1;
+        }
+    }
+    ssize_t sent = copywrite(out_fd, buf, n);
+    if (sent < 0) return -1;
+    if (counter) *counter += (size_t)sent;
+    return 1;
+}
+
 static void copyloop(int fd1, int fd2, const char *clientname, const struct socksctx *ctx)
 {
     char buf[BUF_SIZE];
@@ -475,35 +496,13 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
         default: break;
         }
 
-    read_retry0:
         if (fds[0].revents & POLLIN) {
-            ssize_t n = read(fd1, buf, BUF_SIZE);
-            if (n == 0) goto discon;
-            if (n < 0) {
-                switch (errno) {
-                case EINTR: goto read_retry0;
-                case EAGAIN: n = 0; fds[0].revents &= ~POLLIN; break;
-                default: goto discon;
-                }
-            }
-            ssize_t sent = copywrite(fd2, buf, n);
-            if (sent < 0) goto discon;
-            sr.bsent += (size_t)sent;
+            int r = copyread(fd1, fd2, buf, &sr.bsent);
+            if (r == 0 || r == -1) goto discon;
         }
-    read_retry1:
         if (fds[1].revents & POLLIN) {
-            ssize_t n = read(fd2, buf, BUF_SIZE);
-            if (n == 0) goto discon;
-            if (n < 0) {
-                switch (errno) {
-                case EINTR: goto read_retry1;
-                case EAGAIN: n = 0; fds[1].revents &= ~POLLIN; break;
-                default: goto discon;
-                }
-            }
-            ssize_t sent = copywrite(fd1, buf, n);
-            if (sent < 0) goto discon;
-            sr.brecv += (size_t)sent;
+            int r = copyread(fd2, fd1, buf, &sr.brecv);
+            if (r == 0 || r == -1) goto discon;
         }
     }
     return;
