@@ -28,10 +28,6 @@
 #include "sockunion.h"
 #include "nk/privs.h"
 
-#ifndef MAX
-#define MAX(x, y) ((x) > (y) ? (x) : (y))
-#endif
-
 #if defined(__GNUC__) || defined(__clang__)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
 #define LIKELY(x) __builtin_expect(!!(x), 1)
@@ -40,19 +36,7 @@
 #define LIKELY(x) (x)
 #endif
 
-#ifdef PTHREAD_STACK_MIN
-#define THREAD_STACK_SIZE MAX(16*1024, PTHREAD_STACK_MIN)
-#else
-#define THREAD_STACK_SIZE 64*1024
-#endif
-
-#if defined(__APPLE__)
-#undef THREAD_STACK_SIZE
-#define THREAD_STACK_SIZE 64*1024
-#elif defined(__GLIBC__) || defined(__FreeBSD__)
-#undef THREAD_STACK_SIZE
-#define THREAD_STACK_SIZE 32*1024
-#endif
+#define THREAD_STACK_SIZE (64 * 1024)
 
 // Support lagging platforms like OSX.
 #if (defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFlyBSD__))
@@ -101,13 +85,7 @@ static inline void *reallocarray(void *ptr, size_t nmemb, size_t size)
 
 // BUF_SIZE is set to a multiple of a typical 1500 MTU
 // minus options-free IPv6 (40) and TCP (20) headers
-#if THREAD_STACK_SIZE >= 48 * 1024
-#define BUF_SIZE 31680
-#elif THREAD_STACK_SIZE >= 32 * 1024
-#define BUF_SIZE 17280
-#else
-#define BUF_SIZE 8640
-#endif
+#define BUF_SIZE 50400
 
 // struct thread is allocated in blocks
 #define THREAD_BLOCK_SIZE 64
