@@ -476,7 +476,6 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
         }
 
         ssize_t sent, n;
-    spec_read:
         sent = 0, n = 0;
     read_retry0:
         if (fds[0].revents & POLLIN) {
@@ -539,8 +538,6 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
                 goto discon;
             }
         }
-        // If we allow half-duplex speculation, starvation becomes possible.
-        if ((fds[0].revents & POLLIN) && (fds[1].revents & POLLIN)) goto spec_read;
     }
     return;
 discon:
