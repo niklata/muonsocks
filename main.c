@@ -453,10 +453,10 @@ static ssize_t copywrite(int fd, const char *buf, ssize_t buflen)
     return sent;
 }
 
+// 2 = no data available
 // 1 = read and wrote data
 // 0 = disconnect
 // -1 = error
-// -2 = no data available
 static int copyread(int in_fd, int out_fd, char *buf, size_t *counter)
 {
     ssize_t n = read(in_fd, buf, BUF_SIZE);
@@ -464,7 +464,7 @@ static int copyread(int in_fd, int out_fd, char *buf, size_t *counter)
     if (n < 0) {
         switch (errno) {
         case EINTR: return 1; // zero-size read/write
-        case EAGAIN: return -2; // no data available
+        case EAGAIN: return 2; // no data available
         default: return -1;
         }
     }
@@ -498,11 +498,11 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
 
         if (fds[0].revents & POLLIN) {
             int r = copyread(fd1, fd2, buf, &sr.bsent);
-            if (r == 0 || r == -1) goto discon;
+            if (r <= 0) goto discon;
         }
         if (fds[1].revents & POLLIN) {
             int r = copyread(fd2, fd1, buf, &sr.brecv);
-            if (r == 0 || r == -1) goto discon;
+            if (r <= 0) goto discon;
         }
     }
     return;
