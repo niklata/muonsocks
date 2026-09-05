@@ -54,8 +54,30 @@
 #define THREAD_STACK_SIZE 32*1024
 #endif
 
+// Support lagging platforms like OSX.
 #if (defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFlyBSD__))
-#define USE_ACCEPT4
+#define MU_SOCKET_OPTS (SOCK_CLOEXEC|SOCK_NONBLOCK)
+static int socket_setup_obsolete(int fd, bool nonblock) { (void)fd; (void)nonblock; return 0; }
+#define mu_accept(...) accept4(__VA_ARGS__, SOCK_CLOEXEC)
+#else
+#define MU_SOCKET_OPTS (0)
+static int socket_setup_obsolete(int fd, bool nonblock)
+{
+    int ret = 0;
+    if (nonblock) {
+        int flags = fcntl(fd, F_GETFL);
+        if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+            ret = -1;
+            dprintf(2, "failed to set O_NONBLOCK on socket\n");
+        }
+    }
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
+        ret = -1;
+        dprintf(2, "failed to set FD_CLOEXEC on socket\n");
+    }
+    return ret;
+}
+#define mu_accept(...) accept(__VA_ARGS__)
 #endif
 
 // Time spent trying to connect to an IP address before failing or
@@ -237,11 +259,7 @@ static int server_waitclient(struct server *server, struct client* client)
     socklen_t clen;
 retry:
     clen = sizeof client->addr;
-#ifdef USE_ACCEPT4
-    client->fd = accept4(server->fd, (struct sockaddr *)&client->addr, &clen, SOCK_CLOEXEC);
-#else
-    client->fd = accept(server->fd, (struct sockaddr *)&client->addr, &clen);
-#endif
+    client->fd = mu_accept(server->fd, (struct sockaddr *)&client->addr, &clen);
     if (client->fd == -1) {
         switch (errno) {
 #ifdef __linux__
@@ -265,14 +283,8 @@ retry:
             return -1;
         }
     }
+    if (socket_setup_obsolete(client->fd, false) == -1) { close(client->fd); return -1; }
     int flags = 1;
-#ifndef USE_ACCEPT4
-    flags = fcntl(client->fd, F_GETFL);
-    if (fcntl(client->fd, F_SETFL, flags | O_NONBLOCK) == -1)
-        dprintf(2, "failed to set O_NONBLOCK on client socket\n");
-    if (fcntl(client->fd, F_SETFD, FD_CLOEXEC) == -1)
-        dprintf(2, "failed to set CLOEXEC on client socket\n");
-#endif
     if (setsockopt(client->fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)
         dprintf(2, "failed to set TCP_NODELAY on client socket\n");
     return 0;
@@ -297,8 +309,13 @@ static int server_setup(struct server *server, unsigned short port) {
     if (resolve(server->listenip, port, AF_UNSPEC, &ainfo)) return -1;
     int listenfd = -1;
     for (struct addrinfo *p = ainfo; p; p = p->ai_next) {
-        if ((listenfd = socket(p->ai_family, p->ai_socktype|SOCK_CLOEXEC|SOCK_NONBLOCK, p->ai_protocol)) < 0)
+        if ((listenfd = socket(p->ai_family, p->ai_socktype|MU_SOCKET_OPTS, p->ai_protocol)) < 0)
             continue;
+        if (socket_setup_obsolete(listenfd, true) < 0) {
+            close(listenfd);
+            listenfd = -1;
+            continue;
+        }
         int yes = 1;
         if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes) < 0) {
             dprintf(2, "failed to set SO_REUSEADDR on listen socket\n");
@@ -755,16 +772,9 @@ static int client_connect(const struct addrinfo *addr, bool *connected)
 {
     int fd = -1;
     *connected = false;
-#ifndef USE_ACCEPT4
-    fd = socket(addr->ai_family, SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK, addr->ai_protocol);
+    fd = socket(addr->ai_family, SOCK_STREAM|MU_SOCKET_OPTS, addr->ai_protocol);
     if (UNLIKELY(fd == -1)) return fd;
-#else
-    fd = socket(addr->ai_family, SOCK_STREAM, addr->ai_protocol);
-    if (UNLIKELY(fd == -1)) return fd;
-    int flags = fcntl(fd, F_GETFL);
-    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) goto fail;
-    if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) goto fail;
-#endif
+    if (socket_setup_obsolete(fd, true) == -1) goto fail;
 
     if (UNLIKELY(SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1)) goto fail;
 
