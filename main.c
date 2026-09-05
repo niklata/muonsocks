@@ -443,7 +443,8 @@ static ssize_t copywrite(int fd, const char *buf, ssize_t buflen)
         if (m < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 struct pollfd pfd = { .fd = fd, .events = POLLOUT };
-                int r = poll(&pfd, 1, -1);
+                int r = poll(&pfd, 1, 60*15*1000);
+                if (UNLIKELY(r == 0)) return -1;
                 if (UNLIKELY(r < 0 && errno != EINTR)) return -1;
                 if (UNLIKELY(r > 0 && (pfd.revents & (POLLERR|POLLHUP)))) return -1;
                 continue;
