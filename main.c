@@ -43,7 +43,7 @@
 #define MU_SOCKET_OPTS (SOCK_CLOEXEC|SOCK_NONBLOCK)
 static int socket_set_nonblock(int fd) { (void)fd; return 0; }
 static int socket_set_cloexec(int fd) { (void)fd; return 0; }
-#define mu_accept(...) accept4(__VA_ARGS__, SOCK_CLOEXEC)
+#define mu_accept(...) accept4(__VA_ARGS__, MU_SOCKET_OPTS)
 #else
 #define MU_SOCKET_OPTS (0)
 static int socket_set_nonblock(int fd)
@@ -276,7 +276,10 @@ retry:
             return -1;
         }
     }
-    if (socket_set_cloexec(client->fd) == -1) { close(client->fd); return -1; }
+    if (socket_set_cloexec(client->fd) == -1 || socket_set_nonblock(client->fd) == -1) {
+        close(client->fd);
+        return -1;
+    }
     int flags = 1;
     if (setsockopt(client->fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)
         dprintf(2, "failed to set TCP_NODELAY on client socket\n");
@@ -529,6 +532,11 @@ discon:
 static bool extend_cbuf(const struct thread *t, char *buf, size_t *buflen)
 {
     for (;;) {
+        struct pollfd pfd = { .fd = t->client.fd, .events = POLLIN };
+        int r = poll(&pfd, 1, 30);
+        if (UNLIKELY(r == 0)) return false;
+        if (UNLIKELY(r < 0 && errno != EINTR)) return false;
+        if (UNLIKELY(r > 0 && (pfd.revents & (POLLERR|POLLHUP)))) return false;
         ssize_t n = read(t->client.fd, buf + *buflen, BUF_SIZE - *buflen);
         if (n == 0) {
             return false;
