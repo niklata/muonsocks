@@ -507,9 +507,8 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
             ra = copyread(fd1, fd2, buf, &sr.bsent);
             rb = copyread(fd2, fd1, buf, &sr.brecv);
             if (UNLIKELY(ra == 0)) fds[0].events &= ~POLLIN;
-            if (UNLIKELY(ra < 0)) goto discon;
             if (UNLIKELY(rb == 0)) fds[1].events &= ~POLLIN;
-            if (UNLIKELY(rb < 0)) goto discon;
+            if (UNLIKELY(ra < 0 || rb < 0)) goto discon;
         } while (ra == 1 && rb == 1);
         if (UNLIKELY(!(fds[0].events & POLLIN) && !(fds[1].events & POLLIN))) goto discon;
     }
