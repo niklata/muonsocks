@@ -326,6 +326,8 @@ static int server_setup(struct server *server, unsigned short port) {
     return ret;
 }
 
+static ssize_t copywrite(int fd, const char *buf, ssize_t buflen);
+
 static int is_authed(union sockaddr_union *client, union sockaddr_union *authedip) {
     int af = SOCKADDR_UNION_AF(authedip);
     if (af == SOCKADDR_UNION_AF(client)) {
@@ -352,11 +354,8 @@ static void add_auth_ip(union sockaddr_union *caddr) {
 
 static int send_auth_response(int fd, char version, enum authmethod method) {
     char buf[2] = { version, method };
-    for (;;) {
-        ssize_t r = write(fd, buf, sizeof buf);
-        if (r == -1 && errno == EINTR) continue;
-        return r == sizeof buf ? r : -1;
-    }
+    ssize_t blen = sizeof buf;
+    return copywrite(fd, buf, sizeof buf) == blen ? blen : -1;
 }
 
 static int send_error(const struct client *c, int fd, enum errorcode ec) {
@@ -366,7 +365,7 @@ static int send_error(const struct client *c, int fd, enum errorcode ec) {
         if (getsockname(fd, (struct sockaddr *)&srcaddr, &srcaddrlen) == -1) return -1;
     }
     char b[24];
-    size_t blen;
+    ssize_t blen;
     if (c->socksver == 5) {
         b[0] = 5;
         b[1] = ec;
@@ -401,11 +400,7 @@ static int send_error(const struct client *c, int fd, enum errorcode ec) {
     } else {
         return -1;
     }
-    for (;;) {
-        ssize_t r = write(fd, b, blen);
-        if (r == -1 && errno == EINTR) continue;
-        return r == (ssize_t)blen ? r : -1;
-    }
+    return copywrite(fd, b, blen) == blen ? blen : -1;
 }
 
 struct socksctx {
