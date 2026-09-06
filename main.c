@@ -935,9 +935,7 @@ static void* clientthread(void *data) {
         if (pfd[0].fd == -1 || pfd[1].fd == -1) continue;
         goto poll_again;
     }
-connected:
-
-    if (UNLIKELY(fcntl(fd, F_SETFL, 0) < 0)) goto err2;
+connected:;
     int flags = 1;
     if (UNLIKELY(setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)) {
         dprintf(2, "failed to set TCP_NODELAY on remote socket\n");
@@ -956,8 +954,6 @@ connected:
  out0:
     clientthread_cleanup(t);
     return NULL;
- err2:
-    close(fd);
  err1:
     freeaddrinfo(ctx.remote);
  err0:
