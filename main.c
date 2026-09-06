@@ -41,20 +41,24 @@
 // Support lagging platforms like OSX.
 #if (defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFlyBSD__))
 #define MU_SOCKET_OPTS (SOCK_CLOEXEC|SOCK_NONBLOCK)
-static int socket_setup_obsolete(int fd, bool nonblock) { (void)fd; (void)nonblock; return 0; }
+static int socket_set_nonblock(int fd) { (void)fd; return 0; }
+static int socket_set_cloexec(int fd) { (void)fd; return 0; }
 #define mu_accept(...) accept4(__VA_ARGS__, SOCK_CLOEXEC)
 #else
 #define MU_SOCKET_OPTS (0)
-static int socket_setup_obsolete(int fd, bool nonblock)
+static int socket_set_nonblock(int fd)
 {
     int ret = 0;
-    if (nonblock) {
-        int flags = fcntl(fd, F_GETFL);
-        if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
-            ret = -1;
-            dprintf(2, "failed to set O_NONBLOCK on socket\n");
-        }
+    int flags = fcntl(fd, F_GETFL);
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        ret = -1;
+        dprintf(2, "failed to set O_NONBLOCK on socket\n");
     }
+    return ret;
+}
+static int socket_set_cloexec(int fd)
+{
+    int ret = 0;
     if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1) {
         ret = -1;
         dprintf(2, "failed to set FD_CLOEXEC on socket\n");
@@ -272,7 +276,7 @@ retry:
             return -1;
         }
     }
-    if (socket_setup_obsolete(client->fd, false) == -1) { close(client->fd); return -1; }
+    if (socket_set_cloexec(client->fd) == -1) { close(client->fd); return -1; }
     int flags = 1;
     if (setsockopt(client->fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)
         dprintf(2, "failed to set TCP_NODELAY on client socket\n");
@@ -300,7 +304,7 @@ static int server_setup(struct server *server, unsigned short port) {
     for (struct addrinfo *p = ainfo; p; p = p->ai_next) {
         if ((listenfd = socket(p->ai_family, p->ai_socktype|MU_SOCKET_OPTS, p->ai_protocol)) < 0)
             continue;
-        if (socket_setup_obsolete(listenfd, true) < 0) {
+        if (socket_set_nonblock(listenfd) < 0 || socket_set_cloexec(listenfd) < 0) {
             close(listenfd);
             listenfd = -1;
             continue;
@@ -760,7 +764,7 @@ static int client_connect(const struct addrinfo *addr, bool *connected)
     *connected = false;
     fd = socket(addr->ai_family, SOCK_STREAM|MU_SOCKET_OPTS, addr->ai_protocol);
     if (UNLIKELY(fd == -1)) return fd;
-    if (socket_setup_obsolete(fd, true) == -1) goto fail;
+    if (socket_set_nonblock(fd) == -1 || socket_set_cloexec(fd) == -1) goto fail;
 
     if (UNLIKELY(SOCKADDR_UNION_AF(&bind_addr) != AF_UNSPEC && bindtoip(fd, &bind_addr) == -1)) goto fail;
 
