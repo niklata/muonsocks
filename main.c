@@ -793,18 +793,12 @@ static inline long timespec_diff_ms(const struct timespec *start, const struct t
 
 static void* clientthread(void *data) {
     struct thread *t = (struct thread *)data;
-    struct socksctx ctx;
+    struct socksctx ctx = { .errc = EC_GENERAL_FAILURE };
     char clientname[256] = { 0 };
-    struct addrinfo *addr;
 
-    ctx.errc = EC_GENERAL_FAILURE;
     int r = parse_socksreq(t, &ctx);
-    if (LIKELY(r == 0)) {
-    } else if (r == -1) {
-        goto out0;
-    } else if (r == -2) {
-        goto err0;
-    }
+    if (UNLIKELY(r == -1)) goto out0;
+    if (UNLIKELY(r == -2)) goto err0;
 
     if (UNLIKELY(!allow_ipv6 && ctx.remote->ai_addr->sa_family == AF_INET6)) {
         ctx.errc = EC_ADDRESSTYPE_NOT_SUPPORTED;
@@ -814,14 +808,13 @@ static void* clientthread(void *data) {
         ctx.errc = EC_ADDRESSTYPE_NOT_SUPPORTED;
         goto err1;
     }
-    addr = ctx.remote;
+    struct addrinfo *addr = ctx.remote;
     int fd = -1, pto = CONNECTION_DELAY_MS;
     struct pollfd pfd[2] = {
         { .fd = -1, .events = 0 },
         { .fd = -1, .events = 0 },
     };
-    struct timespec spawn_ts[2] = {0};
-    struct timespec now, nowp;
+    struct timespec spawn_ts[2] = {0}, now, nowp;
     clock_gettime(CLOCK_MONOTONIC, &now);
 
     for (;;) {
