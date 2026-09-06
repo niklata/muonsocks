@@ -25,8 +25,8 @@ are set by the available RAM and file descriptor limits.  OOM does not
 cause termination, and explicit memory allocation and heap
 fragmentation are minimized.
 
-It is ~1150 LoC compared to microsocks's ~600 LoC, so it is not
-as minimal, but it is still a very small program (~27KiB dynamically
+It is ~1200 LoC compared to microsocks's ~600 LoC, so it is not
+as minimal, but it is still a very small program (~35KiB dynamically
 linked to glibc on amd64).
 
 ## Requirements
@@ -56,10 +56,6 @@ Then the program can be run similarly to:
 
 Which would run a SOCKS5 server listening for requests on 192.168.0.1:1080 and
 10.0.0.1:1080 that would only send outgoing IPv4 requests.
-
-I suggest running muonsocks from a process supervisor such as
-[s6](http://www.skarnet.org/software/s6).  This will allow for reliable
-functioning in the case of unforseen or unrecoverable errors.
 
 For full information on command line options, run:
 
