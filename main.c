@@ -87,6 +87,13 @@ static inline void *reallocarray(void *ptr, size_t nmemb, size_t size)
 // with multiple IPs.
 #define CONNECTION_DELAY_MS 50
 
+// Inactive connections are reaped after 15 min to free resources.
+// Usually programs send keep-alive packets so this should only happen
+// when a connection is really unused.
+#define IDLE_TIMEOUT_MS (60*15*1000)
+// A 10s inactivity timeout is used during the initial negotiation phase
+#define HANDSHAKE_TIMEOUT_MS (10*1000)
+
 // BUF_SIZE is set to a multiple of a typical 1500 MTU
 // minus options-free IPv6 (40) and TCP (20) headers
 #define BUF_SIZE 50400
@@ -326,7 +333,7 @@ static int server_setup(struct server *server, unsigned short port) {
     return ret;
 }
 
-static ssize_t copywrite(int fd, const char *buf, ssize_t buflen);
+static ssize_t copywrite(int fd, const char *buf, ssize_t buflen, int timeout);
 
 static int is_authed(union sockaddr_union *client, union sockaddr_union *authedip) {
     int af = SOCKADDR_UNION_AF(authedip);
@@ -355,7 +362,7 @@ static void add_auth_ip(union sockaddr_union *caddr) {
 static int send_auth_response(int fd, char version, enum authmethod method) {
     char buf[2] = { version, method };
     ssize_t blen = sizeof buf;
-    return copywrite(fd, buf, sizeof buf) == blen ? blen : -1;
+    return copywrite(fd, buf, sizeof buf, HANDSHAKE_TIMEOUT_MS) == blen ? blen : -1;
 }
 
 static int send_error(const struct client *c, int fd, enum errorcode ec) {
@@ -400,7 +407,7 @@ static int send_error(const struct client *c, int fd, enum errorcode ec) {
     } else {
         return -1;
     }
-    return copywrite(fd, b, blen) == blen ? blen : -1;
+    return copywrite(fd, b, blen, HANDSHAKE_TIMEOUT_MS) == blen ? blen : -1;
 }
 
 struct socksctx {
@@ -423,7 +430,7 @@ static void log_dc(int clientfd, const char *clientname, const struct socksctx *
           ctx->namebuf, ctx->port, sr->bsent, sr->brecv);
 }
 
-static ssize_t copywrite(int fd, const char *buf, ssize_t buflen)
+static ssize_t copywrite(int fd, const char *buf, ssize_t buflen, int timeout)
 {
     ssize_t sent = 0;
     while (sent < buflen) {
@@ -435,7 +442,7 @@ static ssize_t copywrite(int fd, const char *buf, ssize_t buflen)
         if (m < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 struct pollfd pfd = { .fd = fd, .events = POLLOUT };
-                int r = poll(&pfd, 1, 60*15*1000);
+                int r = poll(&pfd, 1, timeout);
                 if (UNLIKELY(r == 0)) return -1;
                 if (UNLIKELY(r < 0 && errno != EINTR)) return -1;
                 if (UNLIKELY(r > 0 && (pfd.revents & (POLLERR|POLLHUP)))) return -1;
@@ -466,7 +473,7 @@ static int copyread(int in_fd, int out_fd, char *buf, size_t *counter)
         default: return -1;
         }
     }
-    ssize_t sent = copywrite(out_fd, buf, n);
+    ssize_t sent = copywrite(out_fd, buf, n, IDLE_TIMEOUT_MS);
     if (sent < 0) return -1;
     if (counter) *counter += (size_t)sent;
     return 1;
@@ -482,10 +489,7 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
     struct srstats sr = { 0 };
 
     for (;;) {
-        /* inactive connections are reaped after 15 min to free resources.
-           usually programs send keep-alive packets so this should only happen
-           when a connection is really unused. */
-        switch (poll(fds, 2, 60*15*1000)) {
+        switch (poll(fds, 2, IDLE_TIMEOUT_MS)) {
         case -1:
                  if (errno == EINTR || errno == EAGAIN) continue;
                  else perror("poll");
@@ -516,7 +520,7 @@ static bool extend_cbuf(const struct thread *t, char *buf, size_t *buflen)
 {
     for (;;) {
         struct pollfd pfd = { .fd = t->client.fd, .events = POLLIN };
-        int r = poll(&pfd, 1, 30);
+        int r = poll(&pfd, 1, HANDSHAKE_TIMEOUT_MS);
         if (UNLIKELY(r == 0)) return false;
         if (UNLIKELY(r < 0 && errno != EINTR)) return false;
         if (UNLIKELY(r > 0 && (pfd.revents & (POLLERR|POLLHUP)))) return false;
