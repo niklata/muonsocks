@@ -501,14 +501,20 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
         if (UNLIKELY(fds[0].revents & (POLLERR|POLLHUP))) goto discon;
         if (UNLIKELY(fds[1].revents & (POLLERR|POLLHUP))) goto discon;
 
-        int ra, rb;
+        int ra = fds[0].revents & POLLIN, rb = fds[1].revents & POLLIN;
         do {
-            ra = copyread(fd1, fd2, buf, &sr.bsent);
-            rb = copyread(fd2, fd1, buf, &sr.brecv);
-            if (UNLIKELY(ra == 0)) fds[0].events &= ~POLLIN;
-            if (UNLIKELY(rb == 0)) fds[1].events &= ~POLLIN;
+            if (fds[0].revents & POLLIN) {
+                ra = copyread(fd1, fd2, buf, &sr.bsent);
+                if (ra != 1) fds[0].revents &= ~POLLIN;
+                if (UNLIKELY(ra <= 0)) fds[0].events &= ~POLLIN;
+            }
+            if (fds[1].revents & POLLIN) {
+                rb = copyread(fd2, fd1, buf, &sr.brecv);
+                if (rb != 1) fds[1].revents &= ~POLLIN;
+                if (UNLIKELY(rb <= 0)) fds[1].events &= ~POLLIN;
+            }
             if (UNLIKELY(ra < 0 || rb < 0)) goto discon;
-        } while (ra == 1 && rb == 1);
+        } while (ra == 1 || rb == 1);
         if (UNLIKELY(!(fds[0].events & POLLIN) && !(fds[1].events & POLLIN))) goto discon;
     }
     return;
