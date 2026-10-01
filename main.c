@@ -510,14 +510,15 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
             if (fds[0].revents & POLLIN) {
                 ra = copyread(fd1, fd2, buf, &sr.bsent);
                 if (ra != 1) fds[0].revents &= ~POLLIN;
-                if (UNLIKELY(ra <= 0)) fds[0].events &= ~POLLIN;
+                if (UNLIKELY(ra < 0)) break;
+                if (UNLIKELY(ra == 0)) fds[0].events &= ~POLLIN;
             }
             if (fds[1].revents & POLLIN) {
                 rb = copyread(fd2, fd1, buf, &sr.brecv);
                 if (rb != 1) fds[1].revents &= ~POLLIN;
-                if (UNLIKELY(rb <= 0)) fds[1].events &= ~POLLIN;
+                if (UNLIKELY(rb < 0)) break;
+                if (UNLIKELY(rb == 0)) fds[1].events &= ~POLLIN;
             }
-            if (UNLIKELY(ra < 0 || rb < 0)) break;
         } while (ra == 1 || rb == 1);
         if (UNLIKELY(!(fds[0].events & POLLIN) && !(fds[1].events & POLLIN))) break;
     }
