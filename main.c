@@ -496,7 +496,7 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
         int pr = poll(fds, 2, IDLE_TIMEOUT_MS);
         if (UNLIKELY(pr <= 0)) {
             if (pr == -1) {
-                if (errno == EINTR || errno == EAGAIN) continue;
+                if (errno == EINTR) continue;
                 perror("poll");
             }
             break;
@@ -531,13 +531,17 @@ static bool extend_cbuf(const struct thread *t, char *buf, size_t *buflen)
         struct pollfd pfd = { .fd = t->client.fd, .events = POLLIN };
         int r = poll(&pfd, 1, HANDSHAKE_TIMEOUT_MS);
         if (UNLIKELY(r == 0)) return false;
-        if (UNLIKELY(r < 0 && errno != EINTR)) return false;
+        if (UNLIKELY(r < 0)) {
+            if (errno == EINTR) continue;
+            return false;
+        }
         if (UNLIKELY(r > 0 && (pfd.revents & (POLLERR|POLLHUP)))) return false;
+    read_again:;
         ssize_t n = read(t->client.fd, buf + *buflen, BUF_SIZE - *buflen);
         if (n == 0) {
             return false;
         } else if (n < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) goto read_again;
             return false;
         }
         *buflen += (size_t)n;
@@ -866,7 +870,7 @@ static void* clientthread(void *data) {
         r = poll(pfd, 2, pto); // fixed timeout so we regularly try to queue new addrs
         pto = CONNECTION_DELAY_MS;
         if (r < 0) {
-            if (errno == EINTR || errno == EAGAIN) {
+            if (errno == EINTR) {
                 nowp = now;
                 clock_gettime(CLOCK_MONOTONIC, &now);
                 long elapsed = timespec_diff_ms(&nowp, &now);
@@ -1144,11 +1148,17 @@ int main(int argc, char** argv) {
     for (;;) {
         bool printed_err = false;
         gc_threads();
-        switch (poll(fds, nsrvrs, -1)) {
-        default: break;
-        case -1: if (errno == EINTR || errno == EAGAIN) continue;
-                 else perror("poll");
-        case 0:  continue;
+    poll_again:;
+        int nr = poll(fds, nsrvrs, -1);
+        if (UNLIKELY(nr == 0)) continue;
+        if (UNLIKELY(nr == -1)) {
+            if (errno == EINTR) goto poll_again;
+            if (errno == ENOMEM) {
+                delay10ms();
+                goto poll_again;
+            }
+            perror("poll");
+            break;
         }
         for (size_t i = 0; i < nsrvrs; ++i) {
             if (fds[i].revents & POLLIN) {
