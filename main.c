@@ -489,17 +489,17 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
     struct srstats sr = { 0 };
 
     for (;;) {
-        switch (poll(fds, 2, IDLE_TIMEOUT_MS)) {
-        case -1:
-                 if (errno == EINTR || errno == EAGAIN) continue;
-                 else perror("poll");
-                 // fall through
-        case 0: goto discon;
-        default: break;
+        int pr = poll(fds, 2, IDLE_TIMEOUT_MS);
+        if (UNLIKELY(pr <= 0)) {
+            if (pr == -1) {
+                if (errno == EINTR || errno == EAGAIN) continue;
+                perror("poll");
+            }
+            break;
         }
 
-        if (UNLIKELY(fds[0].revents & (POLLERR|POLLHUP))) goto discon;
-        if (UNLIKELY(fds[1].revents & (POLLERR|POLLHUP))) goto discon;
+        if (UNLIKELY(fds[0].revents & (POLLERR|POLLHUP))) break;
+        if (UNLIKELY(fds[1].revents & (POLLERR|POLLHUP))) break;
 
         int ra = fds[0].revents & POLLIN, rb = fds[1].revents & POLLIN;
         do {
@@ -513,12 +513,10 @@ static void copyloop(int fd1, int fd2, const char *clientname, const struct sock
                 if (rb != 1) fds[1].revents &= ~POLLIN;
                 if (UNLIKELY(rb <= 0)) fds[1].events &= ~POLLIN;
             }
-            if (UNLIKELY(ra < 0 || rb < 0)) goto discon;
+            if (UNLIKELY(ra < 0 || rb < 0)) break;
         } while (ra == 1 || rb == 1);
-        if (UNLIKELY(!(fds[0].events & POLLIN) && !(fds[1].events & POLLIN))) goto discon;
+        if (UNLIKELY(!(fds[0].events & POLLIN) && !(fds[1].events & POLLIN))) break;
     }
-    return;
-discon:
     log_dc(fd1, clientname, ctx, &sr);
 }
 
