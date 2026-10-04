@@ -809,6 +809,13 @@ static inline bool connect_timed_out(const struct timespec *start, const struct 
            ((end->tv_nsec - start->tv_nsec) / 1000000) >= CONNECTION_TIMEOUT_MS;
 }
 
+static bool connect_errored(int fd)
+{
+    int serr = 0;
+    socklen_t slen = sizeof serr;
+    return getsockopt(fd, SOL_SOCKET, SO_ERROR, &serr, &slen) < 0 || serr;
+}
+
 #define CLOSEFD(x) do { close(pfd[(x)].fd); pfd[(x)].fd = -1; } while (0)
 static void* clientthread(void *data) {
     struct thread *t = (struct thread *)data;
@@ -876,25 +883,17 @@ static void* clientthread(void *data) {
             if (pfd[1].fd >= 0 && connect_timed_out(&spawn_ts[1], &now_ts)) CLOSEFD(1);
         } else {
             if (pfd[0].revents & POLLOUT) {
-                int serr = 0;
-                socklen_t slen = sizeof serr;
-                if (getsockopt(pfd[0].fd, SOL_SOCKET, SO_ERROR, &serr, &slen) < 0 || serr) {
+                if (connect_errored(pfd[0].fd)) {
                     CLOSEFD(0);
                 } else {
-                    fd = pfd[0].fd;
-                    pfd[0].fd = -1;
-                    break;
+                    fd = pfd[0].fd; pfd[0].fd = -1; break;
                 }
             }
             if (pfd[1].revents & POLLOUT) {
-                int serr = 0;
-                socklen_t slen = sizeof serr;
-                if (getsockopt(pfd[1].fd, SOL_SOCKET, SO_ERROR, &serr, &slen) < 0 || serr) {
+                if (connect_errored(pfd[1].fd)) {
                     CLOSEFD(1);
                 } else {
-                    fd = pfd[1].fd;
-                    pfd[1].fd = -1;
-                    break;
+                    fd = pfd[1].fd; pfd[1].fd = -1; break;
                 }
             }
             if (pfd[0].revents & (POLLERR|POLLHUP)) CLOSEFD(0);
