@@ -25,7 +25,7 @@ are set by the available RAM and file descriptor limits.  OOM does not
 cause termination, and explicit memory allocation and heap
 fragmentation are minimized.
 
-It is ~1200 LoC compared to microsocks's ~600 LoC, so it is not
+It is ~1150 LoC compared to microsocks's ~600 LoC, so it is not
 as minimal, but it is still a very small program (~35KiB dynamically
 linked to glibc on amd64).
 

@@ -263,14 +263,9 @@ retry:
     if (client->fd == -1) {
         switch (errno) {
         case EINTR: goto retry;
-        case EMFILE:
-        case ENFILE:
-        case ENOBUFS:
-        case ENOMEM:
-            // Resource limit reached errors.
-            return -2;
-        default:
-            return -1;
+        // Resource limit reached errors.
+        case EMFILE: case ENFILE: case ENOBUFS: case ENOMEM: return -2;
+        default: return -1;
         }
     }
     if (socket_set_cloexec(client->fd) == -1 || socket_set_nonblock(client->fd) == -1) {
@@ -552,22 +547,15 @@ static bool extend_cbuf(const struct thread *t, char *buf, size_t *buflen)
 static enum errorcode errno_to_sockscode(void)
 {
     switch (errno) {
-    case ETIMEDOUT:
-        return EC_TTL_EXPIRED;
+    case ETIMEDOUT: return EC_TTL_EXPIRED;
     case EPROTOTYPE:
     case EPROTONOSUPPORT:
-    case EAFNOSUPPORT:
-        return EC_ADDRESSTYPE_NOT_SUPPORTED;
-    case ECONNREFUSED:
-        return EC_CONN_REFUSED;
+    case EAFNOSUPPORT: return EC_ADDRESSTYPE_NOT_SUPPORTED;
+    case ECONNREFUSED: return EC_CONN_REFUSED;
     case ENETDOWN:
-    case ENETUNREACH:
-        return EC_NET_UNREACHABLE;
-    case EHOSTUNREACH:
-        return EC_HOST_UNREACHABLE;
-    case EBADF:
-    default:
-        return EC_GENERAL_FAILURE;
+    case ENETUNREACH: return EC_NET_UNREACHABLE;
+    case EHOSTUNREACH: return EC_HOST_UNREACHABLE;
+    default: return EC_GENERAL_FAILURE;
     }
 }
 
