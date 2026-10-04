@@ -437,9 +437,7 @@ static ssize_t copywrite(int fd, const char *buf, ssize_t buflen, int timeout)
         ssize_t m = write(fd, buf+sent, (size_t)(buflen-sent));
         if (m > 0) {
             sent += m;
-            continue;
-        }
-        if (m < 0) {
+        } else if (m < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 struct pollfd pfd = { .fd = fd, .events = POLLOUT };
             poll_again:;
@@ -469,8 +467,7 @@ static int copyread(int in_fd, int out_fd, char *buf, size_t *counter)
     if (n == 0) {
         shutdown(out_fd, SHUT_WR);
         return 0;
-    }
-    if (n < 0) {
+    } else if (n < 0) {
         switch (errno) {
         case EINTR: return 1; // zero-size read/write
         case EAGAIN: return 2; // no data available
