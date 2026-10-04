@@ -803,10 +803,10 @@ static struct addrinfo *pull_addr(struct addrinfo *addr, const struct socksctx *
     return addr;
 }
 
-static inline long timespec_diff_ms(const struct timespec *start, const struct timespec *end)
+static inline bool connect_timed_out(const struct timespec *start, const struct timespec *end)
 {
     return ((end->tv_sec - start->tv_sec) * 1000) +
-           ((end->tv_nsec - start->tv_nsec) / 1000000);
+           ((end->tv_nsec - start->tv_nsec) / 1000000) >= CONNECTION_TIMEOUT_MS;
 }
 
 #define CLOSEFD(x) do { close(pfd[(x)].fd); pfd[(x)].fd = -1; } while (0)
@@ -881,18 +881,8 @@ static void* clientthread(void *data) {
         handle_timeouts:;
             struct timespec now_ts;
             clock_gettime(CLOCK_MONOTONIC, &now_ts);
-            if (pfd[0].fd >= 0) {
-                long elapsed = timespec_diff_ms(&spawn_ts[0], &now_ts);
-                if (elapsed >= CONNECTION_TIMEOUT_MS) {
-                    CLOSEFD(0);
-                }
-            }
-            if (pfd[1].fd >= 0) {
-                long elapsed = timespec_diff_ms(&spawn_ts[1], &now_ts);
-                if (elapsed >= CONNECTION_TIMEOUT_MS) {
-                    CLOSEFD(1);
-                }
-            }
+            if (pfd[0].fd >= 0 && connect_timed_out(&spawn_ts[0], &now_ts)) CLOSEFD(0);
+            if (pfd[1].fd >= 0 && connect_timed_out(&spawn_ts[1], &now_ts)) CLOSEFD(1);
         } else {
             if (pfd[0].revents & POLLOUT) {
                 int serr = 0;
@@ -916,12 +906,8 @@ static void* clientthread(void *data) {
                     break;
                 }
             }
-            if (pfd[0].revents & (POLLERR|POLLHUP)) {
-                CLOSEFD(0);
-            }
-            if (pfd[1].revents & (POLLERR|POLLHUP)) {
-                CLOSEFD(1);
-            }
+            if (pfd[0].revents & (POLLERR|POLLHUP)) CLOSEFD(0);
+            if (pfd[1].revents & (POLLERR|POLLHUP)) CLOSEFD(1);
         }
         if (pfd[0].fd == -1 || pfd[1].fd == -1) continue;
         goto poll_again;
