@@ -777,15 +777,18 @@ fail:
     return -1;
 }
 
-static struct addrinfo *pull_addr(struct addrinfo *addr, const struct socksctx *ctx)
+static struct addrinfo *pull_addr(struct addrinfo **addr, const struct socksctx *ctx)
 {
-    for (; addr; addr = addr->ai_next) {
-        if (!allow_ipv4 && addr->ai_family == AF_INET) continue;
-        if (!allow_ipv6 && addr->ai_family == AF_INET6) continue;
-        if (UNLIKELY(is_banned(addr->ai_family, ctx->remote))) continue;
+    struct addrinfo *ret = NULL;
+    for (; *addr; *addr = (*addr)->ai_next) {
+        if (!allow_ipv4 && (*addr)->ai_family == AF_INET) continue;
+        if (!allow_ipv6 && (*addr)->ai_family == AF_INET6) continue;
+        if (UNLIKELY(is_banned((*addr)->ai_family, ctx->remote))) continue;
+        ret = *addr;
+        *addr = (*addr)->ai_next;
         break;
     }
-    return addr;
+    return ret;
 }
 
 static inline bool connect_timed_out(const struct timespec *start, const struct timespec *end)
@@ -829,10 +832,10 @@ static void* clientthread(void *data) {
 
     do {
         if (pfd[0].fd == -1 || pfd[1].fd == -1) {
-            addr = pull_addr(addr, &ctx);
-            if (addr) {
+            struct addrinfo *caddr = pull_addr(&addr, &ctx);
+            if (caddr) {
                 bool connected;
-                int tfd = client_connect(addr, &connected);
+                int tfd = client_connect(caddr, &connected);
                 if (tfd == -1) continue;
                 if (connected) {
                     fd = tfd;
