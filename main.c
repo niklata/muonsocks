@@ -833,8 +833,7 @@ static void* clientthread(void *data) {
         { .fd = -1, .events = 0 },
         { .fd = -1, .events = 0 },
     };
-    struct timespec spawn_ts[2] = {0}, now, nowp;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    struct timespec spawn_ts[2] = {0};
 
     for (;;) {
         if (pfd[0].fd == -1 || pfd[1].fd == -1) {
@@ -868,14 +867,16 @@ static void* clientthread(void *data) {
                 }
             }
         }
-    poll_again:
+    poll_again:;
+        struct timespec poll_ts;
+        clock_gettime(CLOCK_MONOTONIC, &poll_ts);
         r = poll(pfd, 2, pto); // fixed timeout so we regularly try to queue new addrs
         pto = CONNECTION_DELAY_MS;
         if (r < 0) {
             if (errno == EINTR) {
-                nowp = now;
-                clock_gettime(CLOCK_MONOTONIC, &now);
-                long elapsed = timespec_diff_ms(&nowp, &now);
+                struct timespec eintr_ts;
+                clock_gettime(CLOCK_MONOTONIC, &eintr_ts);
+                long elapsed = timespec_diff_ms(&poll_ts, &eintr_ts);
                 if (elapsed >= 0 && elapsed < CONNECTION_DELAY_MS) {
                     pto = CONNECTION_DELAY_MS - (int)elapsed;
                     goto poll_again;
@@ -888,17 +889,17 @@ static void* clientthread(void *data) {
             goto err1;
         }
         if (r == 0) {
-        handle_timeouts:
-            nowp = now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
+        handle_timeouts:;
+            struct timespec now_ts;
+            clock_gettime(CLOCK_MONOTONIC, &now_ts);
             if (pfd[0].fd >= 0) {
-                long elapsed = timespec_diff_ms(&spawn_ts[0], &now);
+                long elapsed = timespec_diff_ms(&spawn_ts[0], &now_ts);
                 if (elapsed >= CONNECTION_TIMEOUT_MS) {
                     CLOSEFD(0);
                 }
             }
             if (pfd[1].fd >= 0) {
-                long elapsed = timespec_diff_ms(&spawn_ts[1], &now);
+                long elapsed = timespec_diff_ms(&spawn_ts[1], &now_ts);
                 if (elapsed >= CONNECTION_TIMEOUT_MS) {
                     CLOSEFD(1);
                 }
