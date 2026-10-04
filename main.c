@@ -842,7 +842,7 @@ static void* clientthread(void *data) {
     };
     struct timespec spawn_ts[2] = {0};
 
-    for (;;) {
+    do {
         if (pfd[0].fd == -1 || pfd[1].fd == -1) {
             addr = pull_addr(addr, &ctx);
             if (addr) {
@@ -865,7 +865,6 @@ static void* clientthread(void *data) {
                 }
             }
         }
-    poll_again:;
         struct timespec poll_ts;
         clock_gettime(CLOCK_MONOTONIC, &poll_ts);
         r = poll(pfd, 2, CONNECTION_DELAY_MS); // fixed timeout so we regularly try to queue new addrs
@@ -874,8 +873,7 @@ static void* clientthread(void *data) {
             CLOSEFD(0);
             CLOSEFD(1);
             goto err1;
-        }
-        if (r == 0) {
+        } else if (r == 0) {
         handle_timeouts:;
             struct timespec now_ts;
             clock_gettime(CLOCK_MONOTONIC, &now_ts);
@@ -899,9 +897,7 @@ static void* clientthread(void *data) {
             if (pfd[0].revents & (POLLERR|POLLHUP)) CLOSEFD(0);
             if (pfd[1].revents & (POLLERR|POLLHUP)) CLOSEFD(1);
         }
-        if (pfd[0].fd == -1 || pfd[1].fd == -1) continue;
-        goto poll_again;
-    }
+    } while (pfd[0].fd >= 0 || pfd[1].fd >= 0);
     CLOSEFD(0);
     CLOSEFD(1);
     int flags = 1;
