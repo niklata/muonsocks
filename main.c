@@ -830,8 +830,8 @@ static void* clientthread(void *data) {
     struct addrinfo *addr = ctx.remote;
     int fd = -1;
     struct pollfd pfd[2] = {
-        { .fd = -1, .events = 0 },
-        { .fd = -1, .events = 0 },
+        { .fd = -1, .events = POLLOUT },
+        { .fd = -1, .events = POLLOUT },
     };
     struct timespec spawn_ts[2] = {0};
 
@@ -846,17 +846,10 @@ static void* clientthread(void *data) {
                     fd = tfd;
                     break;
                 }
-                if (pfd[0].fd == -1) {
-                    pfd[0].fd = tfd;
-                    pfd[0].events = POLLOUT;
-                    clock_gettime(CLOCK_MONOTONIC, &spawn_ts[0]);
-                } else if (pfd[1].fd == -1) {
-                    pfd[1].fd = tfd;
-                    pfd[1].events = POLLOUT;
-                    clock_gettime(CLOCK_MONOTONIC, &spawn_ts[1]);
-                } else {
-                    abort(); // should never happen, coding logic error
-                }
+                int idx = pfd[0].fd == -1 ? 0 : (pfd[1].fd == -1 ? 1 : -1);
+                if (UNLIKELY(idx == -1)) abort(); // should never happen, coding logic error
+                pfd[idx].fd = tfd;
+                clock_gettime(CLOCK_MONOTONIC, &spawn_ts[idx]);
             } else {
                 if (pfd[0].fd == -1 && pfd[1].fd == -1) {
                     // Failed to connect to all addresses.
