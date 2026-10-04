@@ -844,9 +844,7 @@ static void* clientthread(void *data) {
                 if (tfd == -1) continue;
                 if (connected) {
                     fd = tfd;
-                    CLOSEFD(0);
-                    CLOSEFD(1);
-                    goto connected;
+                    break;
                 }
                 if (pfd[0].fd == -1) {
                     pfd[0].fd = tfd;
@@ -891,7 +889,7 @@ static void* clientthread(void *data) {
                     CLOSEFD(0);
                 } else {
                     fd = pfd[0].fd;
-                    CLOSEFD(1);
+                    pfd[0].fd = -1;
                     break;
                 }
             }
@@ -902,7 +900,7 @@ static void* clientthread(void *data) {
                     CLOSEFD(1);
                 } else {
                     fd = pfd[1].fd;
-                    CLOSEFD(0);
+                    pfd[1].fd = -1;
                     break;
                 }
             }
@@ -912,7 +910,8 @@ static void* clientthread(void *data) {
         if (pfd[0].fd == -1 || pfd[1].fd == -1) continue;
         goto poll_again;
     }
-connected:;
+    CLOSEFD(0);
+    CLOSEFD(1);
     int flags = 1;
     if (UNLIKELY(setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)) {
         dprintf(2, "failed to set TCP_NODELAY on remote socket\n");
