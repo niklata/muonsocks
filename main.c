@@ -828,7 +828,7 @@ static void* clientthread(void *data) {
         goto err1;
     }
     struct addrinfo *addr = ctx.remote;
-    int fd = -1, pto = CONNECTION_DELAY_MS;
+    int fd = -1;
     struct pollfd pfd[2] = {
         { .fd = -1, .events = 0 },
         { .fd = -1, .events = 0 },
@@ -870,20 +870,9 @@ static void* clientthread(void *data) {
     poll_again:;
         struct timespec poll_ts;
         clock_gettime(CLOCK_MONOTONIC, &poll_ts);
-        r = poll(pfd, 2, pto); // fixed timeout so we regularly try to queue new addrs
-        pto = CONNECTION_DELAY_MS;
+        r = poll(pfd, 2, CONNECTION_DELAY_MS); // fixed timeout so we regularly try to queue new addrs
         if (r < 0) {
-            if (errno == EINTR) {
-                struct timespec eintr_ts;
-                clock_gettime(CLOCK_MONOTONIC, &eintr_ts);
-                long elapsed = timespec_diff_ms(&poll_ts, &eintr_ts);
-                if (elapsed >= 0 && elapsed < CONNECTION_DELAY_MS) {
-                    pto = CONNECTION_DELAY_MS - (int)elapsed;
-                    goto poll_again;
-                } else {
-                    goto handle_timeouts;
-                }
-            }
+            if (errno == EINTR) goto handle_timeouts;
             CLOSEFD(0);
             CLOSEFD(1);
             goto err1;
