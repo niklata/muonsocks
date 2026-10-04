@@ -609,6 +609,7 @@ static bool is_banned(int family, const struct addrinfo *remote)
 static void clientthread_cleanup(struct thread *t)
 {
     close(t->client.fd);
+    t->client.fd = -1;
     LIST_EXCHANGE_TOP(g_gc_list, t->gc_next, t);
 }
 
@@ -808,6 +809,7 @@ static inline long timespec_diff_ms(const struct timespec *start, const struct t
            ((end->tv_nsec - start->tv_nsec) / 1000000);
 }
 
+#define CLOSEFD(x) do { close(pfd[(x)].fd); pfd[(x)].fd = -1; } while (0)
 static void* clientthread(void *data) {
     struct thread *t = (struct thread *)data;
     struct socksctx ctx = { .errc = EC_GENERAL_FAILURE };
@@ -843,8 +845,8 @@ static void* clientthread(void *data) {
                 if (tfd == -1) continue;
                 if (connected) {
                     fd = tfd;
-                    close(pfd[0].fd);
-                    close(pfd[1].fd);
+                    CLOSEFD(0);
+                    CLOSEFD(1);
                     goto connected;
                 }
                 if (pfd[0].fd == -1) {
@@ -881,8 +883,8 @@ static void* clientthread(void *data) {
                     goto handle_timeouts;
                 }
             }
-            close(pfd[0].fd);
-            close(pfd[1].fd);
+            CLOSEFD(0);
+            CLOSEFD(1);
             goto err1;
         }
         if (r == 0) {
@@ -892,15 +894,13 @@ static void* clientthread(void *data) {
             if (pfd[0].fd >= 0) {
                 long elapsed = timespec_diff_ms(&spawn_ts[0], &now);
                 if (elapsed >= CONNECTION_TIMEOUT_MS) {
-                    close(pfd[0].fd);
-                    pfd[0].fd = -1;
+                    CLOSEFD(0);
                 }
             }
             if (pfd[1].fd >= 0) {
                 long elapsed = timespec_diff_ms(&spawn_ts[1], &now);
                 if (elapsed >= CONNECTION_TIMEOUT_MS) {
-                    close(pfd[1].fd);
-                    pfd[1].fd = -1;
+                    CLOSEFD(1);
                 }
             }
         } else {
@@ -908,11 +908,10 @@ static void* clientthread(void *data) {
                 int serr = 0;
                 socklen_t slen = sizeof serr;
                 if (getsockopt(pfd[0].fd, SOL_SOCKET, SO_ERROR, &serr, &slen) < 0 || serr) {
-                    close(pfd[0].fd);
-                    pfd[0].fd = -1;
+                    CLOSEFD(0);
                 } else {
                     fd = pfd[0].fd;
-                    close(pfd[1].fd);
+                    CLOSEFD(1);
                     break;
                 }
             }
@@ -920,21 +919,18 @@ static void* clientthread(void *data) {
                 int serr = 0;
                 socklen_t slen = sizeof serr;
                 if (getsockopt(pfd[1].fd, SOL_SOCKET, SO_ERROR, &serr, &slen) < 0 || serr) {
-                    close(pfd[1].fd);
-                    pfd[1].fd = -1;
+                    CLOSEFD(1);
                 } else {
                     fd = pfd[1].fd;
-                    close(pfd[0].fd);
+                    CLOSEFD(0);
                     break;
                 }
             }
             if (pfd[0].revents & (POLLERR|POLLHUP)) {
-                close(pfd[0].fd);
-                pfd[0].fd = -1;
+                CLOSEFD(0);
             }
             if (pfd[1].revents & (POLLERR|POLLHUP)) {
-                close(pfd[1].fd);
-                pfd[1].fd = -1;
+                CLOSEFD(1);
             }
         }
         if (pfd[0].fd == -1 || pfd[1].fd == -1) continue;
@@ -965,6 +961,7 @@ connected:;
     send_error(&t->client, t->client.fd, ctx.errc);
     goto out0;
 }
+#undef CLOSEFD
 
 static int usage(void) {
     dprintf(2,
