@@ -804,7 +804,32 @@ static bool connect_errored(int fd)
     return getsockopt(fd, SOL_SOCKET, SO_ERROR, &serr, &slen) < 0 || serr;
 }
 
+// -2  => no more addresses to try
+// -1  => connect queued
+// >=0 => connect immediate success
 #define CLOSEFD(x) do { close(pfd[(x)].fd); pfd[(x)].fd = -1; } while (0)
+static int queue_connect(struct addrinfo **addr, struct socksctx *ctx,
+                         struct timespec *spawn_ts, struct pollfd *pfd)
+{
+    assert(pfd[0].fd == -1 || pfd[1].fd == -1);
+    for (;;) {
+        struct addrinfo *caddr = pull_addr(addr, ctx);
+        if (!caddr) return -2;
+        bool connected;
+        int fd = client_connect(caddr, &connected);
+        if (fd == -1) continue;
+        if (connected) {
+            CLOSEFD(0);
+            CLOSEFD(1);
+            return fd;
+        }
+        int i = pfd[0].fd == -1 ? 0 : 1;
+        pfd[i].fd = fd;
+        clock_gettime(CLOCK_MONOTONIC, &spawn_ts[i]);
+        return -1;
+    }
+}
+
 static void* clientthread(void *data) {
     struct thread *t = (struct thread *)data;
     struct socksctx ctx = { .errc = EC_GENERAL_FAILURE };
@@ -830,29 +855,8 @@ static void* clientthread(void *data) {
     };
     struct timespec spawn_ts[2] = {0};
 
-    do {
-        if (pfd[0].fd == -1 || pfd[1].fd == -1) {
-            struct addrinfo *caddr = pull_addr(&addr, &ctx);
-            if (caddr) {
-                bool connected;
-                int tfd = client_connect(caddr, &connected);
-                if (tfd == -1) continue;
-                if (connected) {
-                    fd = tfd;
-                    break;
-                }
-                int idx = pfd[0].fd == -1 ? 0 : (pfd[1].fd == -1 ? 1 : -1);
-                if (UNLIKELY(idx == -1)) abort(); // should never happen, coding logic error
-                pfd[idx].fd = tfd;
-                clock_gettime(CLOCK_MONOTONIC, &spawn_ts[idx]);
-            } else {
-                if (pfd[0].fd == -1 && pfd[1].fd == -1) {
-                    // Failed to connect to all addresses.
-                    ctx.errc = errno_to_sockscode();
-                    goto err1;
-                }
-            }
-        }
+    goto jumpstart;
+    while (pfd[0].fd >= 0 || pfd[1].fd >= 0) {
         struct timespec poll_ts;
         clock_gettime(CLOCK_MONOTONIC, &poll_ts);
         r = poll(pfd, 2, CONNECTION_DELAY_MS); // fixed timeout so we regularly try to queue new addrs
@@ -885,7 +889,19 @@ static void* clientthread(void *data) {
             if (pfd[0].revents & (POLLERR|POLLHUP)) CLOSEFD(0);
             if (pfd[1].revents & (POLLERR|POLLHUP)) CLOSEFD(1);
         }
-    } while (pfd[0].fd >= 0 || pfd[1].fd >= 0);
+        if (pfd[0].fd == -1 || pfd[1].fd == -1) {
+        jumpstart:;
+            int tfd = queue_connect(&addr, &ctx, spawn_ts, pfd);
+            if (tfd >= 0) {
+                fd = tfd;
+                break;
+            } else if (tfd == -2 && pfd[0].fd == -1 && pfd[1].fd == -1) {
+                // Failed to connect to all addresses.
+                ctx.errc = errno_to_sockscode();
+                goto err1;
+            }
+        }
+    }
     CLOSEFD(0);
     CLOSEFD(1);
     int flags = 1;
