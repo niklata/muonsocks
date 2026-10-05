@@ -544,21 +544,6 @@ static bool extend_cbuf(const struct thread *t, char *buf, size_t *buflen)
 #define EXTEND_BUF() do { if (!extend_cbuf(t, buf, &buflen)) return -1; } while (0)
 #define RESET_BUF() do { buflen = 0; } while (0)
 
-static enum errorcode errno_to_sockscode(void)
-{
-    switch (errno) {
-    case ETIMEDOUT: return EC_TTL_EXPIRED;
-    case EPROTOTYPE:
-    case EPROTONOSUPPORT:
-    case EAFNOSUPPORT: return EC_ADDRESSTYPE_NOT_SUPPORTED;
-    case ECONNREFUSED: return EC_CONN_REFUSED;
-    case ENETDOWN:
-    case ENETUNREACH: return EC_NET_UNREACHABLE;
-    case EHOSTUNREACH: return EC_HOST_UNREACHABLE;
-    default: return EC_GENERAL_FAILURE;
-    }
-}
-
 static bool is_banned(int family, const struct addrinfo *remote)
 {
     for (size_t i = 0; i < nban_dest; ++i) {
@@ -864,6 +849,7 @@ static void* clientthread(void *data) {
             if (errno == EINTR) goto handle_timeouts;
             CLOSEFD(0);
             CLOSEFD(1);
+            ctx.errc = EC_CONN_REFUSED;
             goto err1;
         } else if (r == 0) {
         handle_timeouts:;
@@ -897,13 +883,16 @@ static void* clientthread(void *data) {
                 break;
             } else if (tfd == -2 && pfd[0].fd == -1 && pfd[1].fd == -1) {
                 // Failed to connect to all addresses.
-                ctx.errc = errno_to_sockscode();
-                goto err1;
+                break;
             }
         }
     }
     CLOSEFD(0);
     CLOSEFD(1);
+    if (fd == -1) {
+        ctx.errc = EC_CONN_REFUSED;
+        goto err1;
+    }
     int flags = 1;
     if (UNLIKELY(setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof flags) < 0)) {
         dprintf(2, "failed to set TCP_NODELAY on remote socket\n");
