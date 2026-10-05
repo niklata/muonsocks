@@ -845,35 +845,28 @@ static void* clientthread(void *data) {
         struct timespec poll_ts;
         clock_gettime(CLOCK_MONOTONIC, &poll_ts);
         r = poll(pfd, 2, CONNECTION_DELAY_MS); // fixed timeout so we regularly try to queue new addrs
-        if (r < 0) {
-            if (errno == EINTR) goto handle_timeouts;
-            CLOSEFD(0);
-            CLOSEFD(1);
-            ctx.errc = EC_CONN_REFUSED;
-            goto err1;
+        if (r > 0) {
+            for (size_t i = 0; i < 2; ++i) {
+                if (pfd[i].revents & POLLOUT) {
+                    if (connect_errored(pfd[i].fd)) {
+                        CLOSEFD(i);
+                    } else {
+                        fd = pfd[i].fd; pfd[i].fd = -1; goto done;
+                    }
+                }
+                if (pfd[i].revents & (POLLERR|POLLHUP)) CLOSEFD(i);
+            }
         } else if (r == 0) {
         handle_timeouts:;
             struct timespec now_ts;
             clock_gettime(CLOCK_MONOTONIC, &now_ts);
-            if (pfd[0].fd >= 0 && connect_timed_out(&spawn_ts[0], &now_ts)) CLOSEFD(0);
-            if (pfd[1].fd >= 0 && connect_timed_out(&spawn_ts[1], &now_ts)) CLOSEFD(1);
+            for (size_t i = 0; i < 2; ++i) {
+                if (pfd[i].fd >= 0 && connect_timed_out(&spawn_ts[i], &now_ts)) CLOSEFD(i);
+            }
         } else {
-            if (pfd[0].revents & POLLOUT) {
-                if (connect_errored(pfd[0].fd)) {
-                    CLOSEFD(0);
-                } else {
-                    fd = pfd[0].fd; pfd[0].fd = -1; break;
-                }
-            }
-            if (pfd[1].revents & POLLOUT) {
-                if (connect_errored(pfd[1].fd)) {
-                    CLOSEFD(1);
-                } else {
-                    fd = pfd[1].fd; pfd[1].fd = -1; break;
-                }
-            }
-            if (pfd[0].revents & (POLLERR|POLLHUP)) CLOSEFD(0);
-            if (pfd[1].revents & (POLLERR|POLLHUP)) CLOSEFD(1);
+            if (errno == EINTR) goto handle_timeouts;
+            assert(fd == -1);
+            goto done;
         }
         if (pfd[0].fd == -1 || pfd[1].fd == -1) {
         jumpstart:;
@@ -887,6 +880,7 @@ static void* clientthread(void *data) {
             }
         }
     }
+done:
     CLOSEFD(0);
     CLOSEFD(1);
     if (fd == -1) {
