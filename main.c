@@ -85,7 +85,7 @@ static inline void *reallocarray(void *ptr, size_t nmemb, size_t size)
 
 // Time to wait before queueing a new connection attempt for hosts
 // with multiple IPs.
-#define CONNECTION_DELAY_MS 50
+#define CONNECTION_DELAY_MS 250
 
 // Inactive connections are reaped after 15 min to free resources.
 // Usually programs send keep-alive packets so this should only happen
@@ -796,7 +796,8 @@ static bool connect_errored(int fd)
 static int queue_connect(struct addrinfo **addr, struct socksctx *ctx,
                          struct timespec *spawn_ts, struct pollfd *pfd)
 {
-    assert(pfd[0].fd == -1 || pfd[1].fd == -1);
+    assert(pfd[0].fd == -1 || pfd[1].fd == -1 || pfd[2].fd == -1 || pfd[3].fd == -1
+           || pfd[4].fd == -1 || pfd[5].fd == -1);
     for (;;) {
         struct addrinfo *caddr = pull_addr(addr, ctx);
         if (!caddr) return -2;
@@ -804,11 +805,11 @@ static int queue_connect(struct addrinfo **addr, struct socksctx *ctx,
         int fd = client_connect(caddr, &connected);
         if (fd == -1) continue;
         if (connected) {
-            CLOSEFD(0);
-            CLOSEFD(1);
+            for (size_t i = 0; i < 6; ++i) CLOSEFD(i);
             return fd;
         }
-        int i = pfd[0].fd == -1 ? 0 : 1;
+        int i = 0;
+        for (; i < 6; ++i) if (pfd[i].fd == -1) break;
         pfd[i].fd = fd;
         clock_gettime(CLOCK_MONOTONIC, &spawn_ts[i]);
         return -1;
@@ -834,19 +835,24 @@ static void* clientthread(void *data) {
     }
     struct addrinfo *addr = ctx.remote;
     int fd = -1;
-    struct pollfd pfd[2] = {
+    struct pollfd pfd[6] = {
+        { .fd = -1, .events = POLLOUT },
+        { .fd = -1, .events = POLLOUT },
+        { .fd = -1, .events = POLLOUT },
+        { .fd = -1, .events = POLLOUT },
         { .fd = -1, .events = POLLOUT },
         { .fd = -1, .events = POLLOUT },
     };
-    struct timespec spawn_ts[2] = {0};
+    struct timespec spawn_ts[6] = {0};
 
     goto jumpstart;
-    while (pfd[0].fd >= 0 || pfd[1].fd >= 0) {
+    while (pfd[0].fd >= 0 || pfd[1].fd >= 0 || pfd[2].fd >= 0
+           || pfd[3].fd >= 0 || pfd[4].fd >= 0 || pfd[5].fd >= 0) {
         struct timespec poll_ts;
         clock_gettime(CLOCK_MONOTONIC, &poll_ts);
-        r = poll(pfd, 2, CONNECTION_DELAY_MS); // fixed timeout so we regularly try to queue new addrs
+        r = poll(pfd, 6, CONNECTION_DELAY_MS); // fixed timeout so we regularly try to queue new addrs
         if (r > 0) {
-            for (size_t i = 0; i < 2; ++i) {
+            for (size_t i = 0; i < 6; ++i) {
                 if (pfd[i].revents & POLLOUT) {
                     if (connect_errored(pfd[i].fd)) {
                         CLOSEFD(i);
@@ -860,7 +866,7 @@ static void* clientthread(void *data) {
         handle_timeouts:;
             struct timespec now_ts;
             clock_gettime(CLOCK_MONOTONIC, &now_ts);
-            for (size_t i = 0; i < 2; ++i) {
+            for (size_t i = 0; i < 6; ++i) {
                 if (pfd[i].fd >= 0 && connect_timed_out(&spawn_ts[i], &now_ts)) CLOSEFD(i);
             }
         } else {
@@ -868,21 +874,22 @@ static void* clientthread(void *data) {
             assert(fd == -1);
             goto done;
         }
-        if (pfd[0].fd == -1 || pfd[1].fd == -1) {
+        if (pfd[0].fd == -1 || pfd[1].fd == -1 || pfd[2].fd == -1
+            || pfd[3].fd == -1 || pfd[4].fd == -1 || pfd[5].fd == -1) {
         jumpstart:;
             int tfd = queue_connect(&addr, &ctx, spawn_ts, pfd);
             if (tfd >= 0) {
                 fd = tfd;
                 break;
-            } else if (tfd == -2 && pfd[0].fd == -1 && pfd[1].fd == -1) {
+            } else if (tfd == -2 && pfd[0].fd == -1 && pfd[1].fd == -1 && pfd[2].fd == -1
+                       && pfd[3].fd == -1 && pfd[4].fd == -1 && pfd[5].fd == -1) {
                 // Failed to connect to all addresses.
                 break;
             }
         }
     }
 done:
-    CLOSEFD(0);
-    CLOSEFD(1);
+    for (size_t i = 0; i < 6; ++i) CLOSEFD(i);
     if (fd == -1) {
         ctx.errc = EC_CONN_REFUSED;
         goto err1;
